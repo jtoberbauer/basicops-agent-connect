@@ -117,16 +117,30 @@ async function main() {
   });
   c.ok(`Webhook registered${reg?.webhookId ? ` (${reg.webhookId})` : ""} → ${webhookUrl}`);
 
-  // 5. Create the confirmation task.
+  // 5. Create the confirmation task. create_task requires a projectId, so when
+  //    --project isn't given we use the first project in the workspace.
   c.step("Creating confirmation task");
-  const task = await client.call<{ id?: number; url?: string }>("create_task", {
-    title: `✅ Agent "${displayName}" connected`,
-    description:
-      `<p>Connected via <strong>basicops-agent-connect</strong> at ${new Date().toISOString()}.</p>` +
-      `<p>Webhook: ${webhookUrl}</p>`,
-    ...(projectId ? { projectId } : {}),
-  });
-  c.ok(`Task created${task?.url ? `: ${task.url}` : task?.id ? ` (id ${task.id})` : ""}`);
+  let taskProject = projectId;
+  if (!taskProject) {
+    const projects = await client.call<any>("list_projects");
+    const list = Array.isArray(projects?.data) ? projects.data : Array.isArray(projects) ? projects : [];
+    taskProject = list[0]?.id;
+    if (taskProject) c.info(`Using project "${list[0]?.title ?? list[0]?.name ?? taskProject}" (id ${taskProject})`);
+  }
+
+  if (!taskProject) {
+    c.info("⚠ No project found and no --project given — skipping task creation.");
+  } else {
+    const task = await client.call<{ id?: number; url?: string }>("create_task", {
+      title: `✅ Agent "${displayName}" connected`,
+      description:
+        `<p>Connected via <strong>basicops-agent-connect</strong> at ${new Date().toISOString()}.</p>` +
+        `<p>Webhook: ${webhookUrl}</p>`,
+      projectId: taskProject,
+    });
+    if (task?.id) c.ok(`Task created${task.url ? `: ${task.url}` : ` (id ${task.id})`}`);
+    else c.info(`⚠ Task not created: ${typeof task === "string" ? task : JSON.stringify(task)}`);
+  }
 
   // 6. Stay live.
   c.step("Agent is live — send it a message in BasicOps (Ctrl-C to stop)");
