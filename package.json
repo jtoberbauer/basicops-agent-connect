@@ -1,0 +1,27 @@
+{
+  "name": "basicops-agent-connect",
+  "version": "0.1.0",
+  "description": "One-command CLI to connect a BasicOps agent: verify the API key, open a Tailscale Funnel, register the agent webhook, create a confirmation task, and run the live listener.",
+  "type": "module",
+  "bin": {
+    "basicops-connect": "dist/cli.js"
+  },
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli.ts",
+    "start": "node dist/cli.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
