@@ -51,7 +51,9 @@ Options:
   --api-key <key>    Agent bearer token (or set BASICOPS_API_KEY)
   --agent <name>     Agent name used to build the MCP URL (default: claude)
   --mcp-url <url>    Override the full MCP endpoint URL
-  --port <n>         Local port for the listener (default: 3000)
+  --port <n>         Local listener port (default: auto-pick a free port)
+  --funnel-path <p>  Path on the shared :443 Funnel (default: /<agent>).
+                     Each concurrent agent gets its own path.
   --project <id>     Project to create the confirmation task in (optional)
   --webhook-url <u>  Public webhook URL; skips Tailscale Funnel if provided
   --help             Show this help
@@ -64,12 +66,15 @@ async function main() {
 
   const apiKey = (args["api-key"] as string) ?? process.env.BASICOPS_API_KEY;
   const agent = (args.agent as string) ?? "claude";
-  const port = Number(args.port ?? process.env.PORT ?? 3000);
+  const port = Number(args.port ?? process.env.PORT ?? 0); // 0 = auto-pick a free port
   const mcpUrl =
     (args["mcp-url"] as string) ??
     `https://app.basicops.com/mcp?agent=${encodeURIComponent(agent)}`;
   const projectId = args.project ? Number(args.project) : undefined;
   const explicitWebhook = args["webhook-url"] as string | undefined;
+  // Each concurrent agent mounts its own path on the shared :443 Funnel.
+  const rawPath = (args["funnel-path"] as string) ?? `/${agent}`;
+  const funnelPath = "/" + rawPath.replace(/^\/+/, "").replace(/\/+$/, "");
 
   if (!apiKey) fail("Missing --api-key (or BASICOPS_API_KEY env). See --help.");
 
@@ -90,11 +95,11 @@ async function main() {
   c.ok(`Authenticated as agent "${displayName}" (id ${agentUserId}, enabled)`);
 
   // 2. Bind the listener first (so the Funnel has something to proxy to).
-  c.step(`Starting listener on port ${port}`);
-  await startListener({ mcpUrl, apiKey, agentUserId, port });
-  c.ok("Listener is up");
+  c.step("Starting listener");
+  const boundPort = await startListener({ mcpUrl, apiKey, agentUserId, port });
+  c.ok(`Listener is up on port ${boundPort}`);
 
-  // 3. Public URL — Tailscale Funnel (unless one was provided).
+  // 3. Public URL — Tailscale Funnel at this agent's path (unless one was provided).
   let webhookUrl: string;
   let stopFunnel: (() => Promise<void>) | undefined;
   if (explicitWebhook) {
@@ -102,8 +107,8 @@ async function main() {
     c.step("Using provided webhook URL");
     c.ok(webhookUrl);
   } else {
-    c.step("Opening Tailscale Funnel");
-    const funnel = await startFunnel(port).catch((e) => fail(e.message));
+    c.step(`Opening Tailscale Funnel at ${funnelPath}`);
+    const funnel = await startFunnel(boundPort, funnelPath).catch((e) => fail(e.message));
     stopFunnel = funnel.stop;
     webhookUrl = `${funnel.url}/webhook`;
     c.ok(`Public URL: ${funnel.url}`);

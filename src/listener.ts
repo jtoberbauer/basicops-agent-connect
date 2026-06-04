@@ -61,7 +61,7 @@ function parseEvents(body: any, agentUserId: string): Incoming[] {
   });
 }
 
-export function startListener(cfg: ListenerConfig): Promise<void> {
+export function startListener(cfg: ListenerConfig): Promise<number> {
   const sessions = new Map<number, string>(); // chatId -> Agent SDK session id
 
   async function handleMessage(chatId: number, text: string, messageId?: string) {
@@ -137,10 +137,13 @@ export function startListener(cfg: ListenerConfig): Promise<void> {
     });
   });
 
-  return new Promise<void>((resolve) =>
+  // cfg.port may be 0 (auto-pick a free port); resolve with the actual port.
+  return new Promise<number>((resolve) =>
     server.listen(cfg.port, () => {
-      console.log(`Listener bound on http://localhost:${cfg.port}/webhook`);
-      resolve();
+      const addr = server.address();
+      const actual = typeof addr === "object" && addr ? addr.port : cfg.port;
+      console.log(`Listener bound on http://localhost:${actual}/webhook`);
+      resolve(actual);
     }),
   );
 }

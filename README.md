@@ -37,7 +37,8 @@ basicops-connect --api-key <key> [options]
 | `--api-key <key>` | Agent bearer token (or `BASICOPS_API_KEY` env) | — |
 | `--agent <name>` | Agent name used to build the MCP URL | `claude` |
 | `--mcp-url <url>` | Override the full MCP endpoint URL | `https://app.basicops.com/mcp?agent=<name>` |
-| `--port <n>` | Local listener port | `3000` |
+| `--port <n>` | Local listener port | auto (free port) |
+| `--funnel-path <p>` | Path on the shared :443 Funnel | `/<agent>` |
 | `--project <id>` | Project to create the confirmation task in | (none) |
 | `--webhook-url <u>` | Public URL; skips Tailscale Funnel | (uses Funnel) |
 | `--help` | Show help | — |
@@ -47,6 +48,23 @@ basicops-connect --api-key <key> [options]
 ```bash
 basicops-connect --api-key bo_xxx --agent claude
 ```
+
+## Running multiple agents concurrently
+
+Each agent mounts its own path on the shared :443 Tailscale Funnel and auto-picks
+a free local port, so you can run many at once on one machine — including
+alongside the OpenAI build (`basicops-connect-openai`). Just give each its own
+agent identity:
+
+```bash
+basicops-connect        --api-key bo_aaa --agent claude       # → https://<host>/claude/webhook
+basicops-connect-openai --api-key bo_bbb --agent support-bot  # → https://<host>/support-bot/webhook
+```
+
+Each registers its own webhook and is isolated (separate process, port, path,
+sessions). Stopping one removes only its Funnel mount. If you previously ran an
+agent on the root Funnel path, run `tailscale funnel reset` once before starting
+the path-based agents.
 
 The API key can also be passed via env to keep it out of shell history:
 
