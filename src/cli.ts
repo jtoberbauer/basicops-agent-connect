@@ -7,6 +7,7 @@
  * Steps: verify the key → bind the listener → open a Tailscale Funnel →
  * register the agent webhook → create a confirmation task → stay live.
  */
+import * as readline from "node:readline";
 import { BasicOpsClient } from "./basicops.js";
 import { startFunnel } from "./funnel.js";
 import { startListener } from "./listener.js";
@@ -41,6 +42,50 @@ function fail(msg: string): never {
   process.exit(1);
 }
 
+function promptText(rl: readline.Interface, query: string): Promise<string> {
+  return new Promise((resolve) => rl.question(query, (a) => resolve(a.trim())));
+}
+
+// Like promptText but hides typed input (for secrets).
+function promptHidden(rl: readline.Interface, query: string): Promise<string> {
+  return new Promise((resolve) => {
+    const rlAny = rl as any;
+    rl.question(query, (value) => {
+      rlAny._writeToOutput = (s: string) => rlAny.output.write(s); // restore echo
+      rlAny.output.write("\n");
+      resolve(value.trim());
+    });
+    rlAny._writeToOutput = () => {}; // hide keystrokes
+  });
+}
+
+/**
+ * Interactive installer: prompt for the BasicOps key, agent name, and (optionally)
+ * an Anthropic API key. Leaving the Anthropic key blank uses the machine's `claude`
+ * login instead.
+ */
+async function runInstaller(have: {
+  apiKey?: string;
+  agent?: string;
+}): Promise<{ apiKey: string; agent: string; anthropicApiKey?: string }> {
+  console.log("\n\x1b[36m▶ basicops-connect installer\x1b[0m");
+  console.log("  Enter the agent details (input for keys is hidden).\n");
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const apiKey = have.apiKey || (await promptHidden(rl, "  BasicOps agent API key: "));
+    const agent = have.agent || (await promptText(rl, "  Agent name: "));
+    const anthropicApiKey = await promptHidden(
+      rl,
+      "  Anthropic API key (press Enter to use your `claude` login): ",
+    );
+    if (!apiKey) fail("BasicOps API key is required.");
+    if (!agent) fail("Agent name is required.");
+    return { apiKey, agent, anthropicApiKey: anthropicApiKey || undefined };
+  } finally {
+    rl.close();
+  }
+}
+
 function printHelp() {
   console.log(`basicops-connect — connect a BasicOps agent in one command
 
@@ -64,8 +109,19 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) return printHelp();
 
-  const apiKey = (args["api-key"] as string) ?? process.env.BASICOPS_API_KEY;
-  const agent = (args.agent as string) ?? "claude";
+  let apiKey = (args["api-key"] as string) ?? process.env.BASICOPS_API_KEY;
+  let agent = (args.agent as string) ?? process.env.BASICOPS_AGENT;
+
+  // Interactive installer: when the key or agent is missing and we're on a
+  // terminal, prompt for them. (Flags/env still work for headless / systemd.)
+  if ((!apiKey || !agent) && process.stdin.isTTY) {
+    const cfg = await runInstaller({ apiKey, agent });
+    apiKey = cfg.apiKey;
+    agent = cfg.agent;
+    if (cfg.anthropicApiKey) process.env.ANTHROPIC_API_KEY = cfg.anthropicApiKey;
+  }
+  agent = agent ?? "claude";
+
   const port = Number(args.port ?? process.env.PORT ?? 0); // 0 = auto-pick a free port
   const mcpUrl =
     (args["mcp-url"] as string) ??

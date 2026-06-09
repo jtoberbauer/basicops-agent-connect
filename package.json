@@ -4,7 +4,7 @@
   "description": "One-command CLI to connect a BasicOps agent: verify the API key, open a Tailscale Funnel, register the agent webhook, create a confirmation task, and run the live listener.",
   "type": "module",
   "bin": {
-    "basicops-connect": "dist/cli.js"
+    "basicops-connect": "dist/bin.js"
   },
   "files": ["dist", "scripts", "README.md", "DEPLOY.md"],
   "scripts": {
