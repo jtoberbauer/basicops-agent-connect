@@ -49,6 +49,14 @@ function promptText(rl: readline.Interface, query: string): Promise<string> {
   return new Promise((resolve) => rl.question(query, (a) => resolve(a.trim())));
 }
 
+// Strip bracketed-paste markers + control chars some terminals inject on paste.
+function sanitizeSecret(value: string): string {
+  return value
+    .replace(/\x1b\[2(?:00|01)~/g, "") // bracketed-paste begin/end markers
+    .replace(/[\x00-\x1f\x7f]/g, "") // any remaining control chars
+    .trim();
+}
+
 // Like promptText but hides typed input (for secrets).
 function promptHidden(rl: readline.Interface, query: string): Promise<string> {
   return new Promise((resolve) => {
@@ -56,7 +64,7 @@ function promptHidden(rl: readline.Interface, query: string): Promise<string> {
     rl.question(query, (value) => {
       rlAny._writeToOutput = (s: string) => rlAny.output.write(s); // restore echo
       rlAny.output.write("\n");
-      resolve(value.trim());
+      resolve(sanitizeSecret(value));
     });
     rlAny._writeToOutput = () => {}; // hide keystrokes
   });
