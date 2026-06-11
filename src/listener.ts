@@ -90,6 +90,10 @@ export function startListener(cfg: ListenerConfig): Promise<number> {
           "and friendly. Always post your reply with create_message_in_chat using the " +
           "chatId you were given, then clear your status with set_agent_status status='done'.",
         maxTurns: 10,
+        stderr: (d: string) => {
+          const line = d.trim();
+          if (line) console.error(`  [claude stderr] ${line}`);
+        },
       },
     });
 
