@@ -1,58 +1,53 @@
-# Deploying to a server
+# Deploying to a server (new user)
 
-The package runs the same everywhere. It relies on two ambient dependencies
-that must exist on the machine (your laptop already had them):
+Get a persistent, Claude-powered BasicOps agent running on a fresh Debian/Ubuntu
+server.
 
-1. **Tailscale, logged in** — used to expose the webhook via Funnel.
-2. **Claude auth** — the listener calls Claude to generate replies (subscription
-   via the `claude` CLI, or `ANTHROPIC_API_KEY`).
+## Before you start, have these ready
+- A **BasicOps agent** (created in the BasicOps UI) and its **API key**
+- A **Claude subscription** (you'll log in during install)
+- A **Tailscale account** (free) — used to expose the webhook
+- Access to this repo
 
-Once both are present, the **same command** produces the **same outcome**.
-
-## Quick start (Debian/Ubuntu VPS)
+## Deploy
 
 ```bash
-gh repo clone jtoberbauer/basicops-agent-connect   # or: git clone <ssh-url>
+gh repo clone jtoberbauer/basicops-agent-connect
 cd basicops-agent-connect
-bash scripts/setup-vps.sh                           # installs deps, builds, links
+bash scripts/setup-vps.sh
 ```
 
-Then the two one-time logins the script prints:
+`setup-vps.sh` does the whole thing: installs Node + Tailscale + the Claude CLI,
+builds, connects Tailscale (approve in your browser), then launches the
+installer, which prompts:
+
+```
+  BasicOps agent API key:  (hidden)
+  Agent name:              my-agent
+  Checking Claude login…   → runs the Claude OAuth login if needed (open the URL)
+  Run as a background service (survives logout/reboot)? [Y/n]  → Y
+  (sudo password once)
+```
+
+That installs a **systemd service** and starts it. Done — the agent runs 24/7,
+restarts on crash, and survives reboots.
+
+## Manage it
 
 ```bash
-tailscale up            # join your tailnet
-claude                  # log into Claude; verify:  claude -p "say ok"
+systemctl status basicops-agent-<agent>      # health
+journalctl -u basicops-agent-<agent> -f      # live logs
+sudo systemctl restart basicops-agent-<agent>
 ```
 
-Run it (identical to local):
+Credentials live in `~/.config/basicops-agent/<agent>.env` (mode 600).
 
-```bash
-basicops-connect --api-key <KEY> --agent <NAME>
-```
+## Note on Claude auth
+The agent uses your Claude **subscription login**, which can expire over time. If
+the agent goes quiet, re-run `basicops-connect` (it re-validates and re-logs-in)
+or `claude auth login`. For an auth method that never expires, see the
+OpenAI-powered build (`basicops-agent-connect-openai`), which uses an API key.
 
-That's the whole test loop. No domain or reverse proxy needed — the built-in
-Tailscale Funnel provides the public HTTPS URL.
-
-## Keeping it running (optional)
-
-```ini
-# /etc/systemd/system/basicops-agent.service
-[Service]
-ExecStart=%h/.npm-global/bin/basicops-connect --agent <NAME>
-Environment=BASICOPS_API_KEY=<KEY>
-WorkingDirectory=%h/basicops-agent-connect
-Restart=always
-User=<youruser>
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-sudo systemctl enable --now basicops-agent
-journalctl -u basicops-agent -f
-```
-
-Set `ExecStart` to match `which basicops-connect` on the box. Using
-`Environment=BASICOPS_API_KEY=…` keeps the key out of `ps`.
-```
+## Multiple agents
+Each distinct agent name gets its own Funnel path and its own service, so several
+agents coexist on one box.

@@ -18,13 +18,23 @@ Connect a BasicOps agent in one command. Given an agent's API key, the CLI:
 
 ## Install
 
+**On a server (recommended)** — one command does everything (installs deps,
+connects Tailscale, launches the installer, handles the Claude login, offers a
+persistent service). See [DEPLOY.md](DEPLOY.md):
+
+```bash
+gh repo clone jtoberbauer/basicops-agent-connect
+cd basicops-agent-connect
+bash scripts/setup-vps.sh
+```
+
+**Local / manual:**
+
 ```bash
 npm install
 npm run build
 npm link        # makes `basicops-connect` available globally
 ```
-
-Or run without building: `npm run dev -- --api-key <key>`
 
 ## Usage
 

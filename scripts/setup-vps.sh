@@ -41,16 +41,13 @@ npm install
 npm run build
 npm link
 
-say "Setup complete."
-cat <<'NEXT'
+# 5. Ensure Tailscale is connected (needed for the public webhook Funnel)
+if ! tailscale status --json 2>/dev/null | grep -q '"BackendState": *"Running"'; then
+  say "Connecting Tailscale — approve in your browser when prompted…"
+  sudo tailscale up || { echo "✗ Tailscale didn't come up. Run 'sudo tailscale up', then 'basicops-connect'."; exit 1; }
+fi
 
-Two one-time logins remain (both interactive, need a browser to approve once):
-
-  1) tailscale up        # join your tailnet
-  2) claude              # log into Claude (subscription); verify with:  claude -p "say ok"
-
-Then run the exact same command you ran locally:
-
-  basicops-connect --api-key <KEY> --agent <NAME>
-
-NEXT
+# 6. Launch the interactive installer (prompts for key + agent, handles the
+#    Claude login, and offers to install a persistent service).
+say "Launching the installer…"
+exec node "$(pwd)/dist/bin.js"
