@@ -9,6 +9,8 @@
  */
 import * as readline from "node:readline";
 import { spawn, execFile } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { BasicOpsClient } from "./basicops.js";
 import { startFunnel } from "./funnel.js";
 import { startListener } from "./listener.js";
@@ -131,6 +133,36 @@ async function ensureClaudeLogin(): Promise<void> {
   c.ok("Claude login works");
 }
 
+/**
+ * Offer to install a persistent systemd service (Linux only). Returns true if a
+ * service was installed and started — in which case the caller should NOT also
+ * run the agent in the foreground.
+ */
+async function offerServiceInstall(apiKey: string, agent: string): Promise<boolean> {
+  if (process.platform !== "linux") return false; // systemd only
+
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const ans = (
+    await promptText(rl, "\n  Run as a background service (survives logout/reboot)? [Y/n] ")
+  ).toLowerCase();
+  rl.close();
+  if (ans === "n" || ans === "no") return false;
+
+  const script = join(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "install-service.sh");
+  c.step("Installing systemd service (sudo may prompt for your password)");
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn("bash", [script], {
+      stdio: "inherit",
+      env: { ...process.env, BASICOPS_API_KEY: apiKey, BASICOPS_AGENT: agent },
+    });
+    child.on("error", reject);
+    child.on("exit", (code) =>
+      code === 0 ? resolve() : reject(new Error(`service install exited with code ${code}`)),
+    );
+  }).catch((e) => fail(`Service install failed: ${e.message}`));
+  return true;
+}
+
 function printHelp() {
   console.log(`basicops-connect — connect a BasicOps agent in one command
 
@@ -165,6 +197,14 @@ async function main() {
     apiKey = cfg.apiKey;
     agent = cfg.agent;
     await ensureClaudeLogin(); // step 3: Claude OAuth login flow
+
+    // Offer to install as a persistent service. If installed, systemd runs the
+    // agent — don't also run it in the foreground here.
+    if (await offerServiceInstall(apiKey, agent)) {
+      c.ok("Agent installed as a service and started. It will keep running and survive reboots.");
+      c.info("Logs: journalctl -u basicops-agent-<agent> -f");
+      return;
+    }
   }
   agent = agent ?? "claude";
 
