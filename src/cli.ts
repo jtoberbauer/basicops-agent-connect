@@ -79,18 +79,24 @@ async function runInstaller(have: {
   }
 }
 
-/** True if `claude auth status` reports a logged-in session. */
-function claudeLoggedIn(): Promise<boolean> {
+/**
+ * True only if Claude can ACTUALLY authenticate — a real `claude -p` call.
+ * (`claude auth status` returns loggedIn:true even for expired tokens, which is
+ * what silently broke the agent, so we don't trust it.)
+ */
+function claudeWorks(): Promise<boolean> {
   return new Promise((resolve) => {
-    execFile("claude", ["auth", "status"], (err, stdout) => {
-      if (err) return resolve(false);
-      try {
-        resolve(JSON.parse(stdout).loggedIn === true);
-      } catch {
-        resolve(/"loggedIn"\s*:\s*true/.test(stdout));
-      }
+    execFile("claude", ["-p", "ok"], { timeout: 60000 }, (err, stdout, stderr) => {
+      const out = `${stdout ?? ""}${stderr ?? ""}`;
+      if (/invalid authentication|failed to authenticate|401|unauthor/i.test(out)) return resolve(false);
+      resolve(!err);
     });
   });
+}
+
+/** Run a `claude auth <sub>` command, ignoring its result (used for logout). */
+function claudeAuth(sub: string): Promise<void> {
+  return new Promise((resolve) => execFile("claude", ["auth", sub], () => resolve()));
 }
 
 /** Run the Claude OAuth login flow interactively (inherits the terminal). */
@@ -102,18 +108,27 @@ function claudeLogin(): Promise<void> {
   });
 }
 
-/** Ensure the machine has a Claude login; launch the OAuth flow if not. */
+/**
+ * Ensure Claude can actually authenticate. Validates with a real call; if it
+ * fails (missing OR expired token), clears any stale token and runs the OAuth
+ * login flow, then re-validates so the agent is guaranteed able to reply.
+ */
 async function ensureClaudeLogin(): Promise<void> {
-  if (await claudeLoggedIn()) {
-    c.ok("Claude login detected");
+  c.step("Checking Claude login");
+  if (await claudeWorks()) {
+    c.ok("Claude login works");
     return;
   }
-  c.step("Logging in to Claude (OAuth) — follow the prompt / open the URL it shows");
+  c.info("No working Claude login (missing or expired) — signing in.");
+  await claudeAuth("logout"); // clear any stale token first
+  c.step("Logging in to Claude (OAuth) — open the URL it shows and approve");
   await claudeLogin().catch((e) =>
     fail(`Claude login failed: ${e.message}\n  Run \`claude auth login\` manually, then retry.`),
   );
-  if (!(await claudeLoggedIn())) fail("Claude login didn't complete. Run `claude auth login`, then retry.");
-  c.ok("Claude login complete");
+  if (!(await claudeWorks())) {
+    fail('Claude login still not working. Run `claude auth login`, verify with `claude -p "say ok"`, then retry.');
+  }
+  c.ok("Claude login works");
 }
 
 function printHelp() {
