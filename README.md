@@ -45,7 +45,6 @@ basicops-connect --api-key <key> [options]
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--api-key <key>` | Agent bearer token (or `BASICOPS_API_KEY` env) | — |
-| `--agent <name>` | Agent name used to build the MCP URL | `claude` |
 | `--mcp-url <url>` | Override the full MCP endpoint URL | `https://app.basicops.com/mcp?agent=<name>` |
 | `--port <n>` | Local listener port | auto (free port) |
 | `--funnel-path <p>` | Path on the shared :443 Funnel | `/<agent>` |

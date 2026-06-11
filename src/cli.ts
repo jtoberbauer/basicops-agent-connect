@@ -62,20 +62,15 @@ function promptHidden(rl: readline.Interface, query: string): Promise<string> {
   });
 }
 
-/** Interactive installer: prompt for the BasicOps key and agent name. */
-async function runInstaller(have: {
-  apiKey?: string;
-  agent?: string;
-}): Promise<{ apiKey: string; agent: string }> {
+/** Interactive installer: prompt for just the BasicOps key (the agent is auto-detected from it). */
+async function runInstaller(have: { apiKey?: string }): Promise<{ apiKey: string }> {
   console.log("\n\x1b[36m▶ basicops-connect installer\x1b[0m");
-  console.log("  Enter the agent details (the API key is hidden).\n");
+  console.log("  Paste your BasicOps agent API key (hidden). The agent is detected automatically.\n");
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   try {
     const apiKey = have.apiKey || (await promptHidden(rl, "  BasicOps agent API key: "));
-    const agent = have.agent || (await promptText(rl, "  Agent name: "));
     if (!apiKey) fail("BasicOps API key is required.");
-    if (!agent) fail("Agent name is required.");
-    return { apiKey, agent };
+    return { apiKey };
   } finally {
     rl.close();
   }
@@ -170,11 +165,11 @@ Usage:
   basicops-connect --api-key <key> [options]
 
 Options:
-  --api-key <key>    Agent bearer token (or set BASICOPS_API_KEY)
-  --agent <name>     Agent name used to build the MCP URL (default: claude)
+  --api-key <key>    Agent bearer token (or set BASICOPS_API_KEY). The agent is
+                     detected automatically from the key.
   --mcp-url <url>    Override the full MCP endpoint URL
   --port <n>         Local listener port (default: auto-pick a free port)
-  --funnel-path <p>  Path on the shared :443 Funnel (default: /<agent>).
+  --funnel-path <p>  Path on the shared :443 Funnel (default: /<detected-agent>).
                      Each concurrent agent gets its own path.
   --project <id>     Project to create the confirmation task in (optional)
   --webhook-url <u>  Public webhook URL; skips Tailscale Funnel if provided
@@ -187,54 +182,52 @@ async function main() {
   if (args.help) return printHelp();
 
   let apiKey = (args["api-key"] as string) ?? process.env.BASICOPS_API_KEY;
-  let agent = (args.agent as string) ?? process.env.BASICOPS_AGENT;
 
-  // Interactive installer: when the key or agent is missing and we're on a
-  // terminal, prompt for them and ensure a Claude login. (Flags/env still work
-  // for headless / systemd.)
-  if ((!apiKey || !agent) && process.stdin.isTTY) {
-    const cfg = await runInstaller({ apiKey, agent });
+  // Interactive installer: when the key is missing and we're on a terminal,
+  // prompt for it and ensure a Claude login. (Flags/env still work headless.)
+  const interactive = !apiKey && process.stdin.isTTY;
+  if (interactive) {
+    const cfg = await runInstaller({ apiKey });
     apiKey = cfg.apiKey;
-    agent = cfg.agent;
     await ensureClaudeLogin(); // step 3: Claude OAuth login flow
-
-    // Offer to install as a persistent service. If installed, systemd runs the
-    // agent — don't also run it in the foreground here.
-    if (await offerServiceInstall(apiKey, agent)) {
-      c.ok("Agent installed as a service and started. It will keep running and survive reboots.");
-      c.info("Logs: journalctl -u basicops-agent-<agent> -f");
-      return;
-    }
   }
-  agent = agent ?? "claude";
+  if (!apiKey) fail("Missing --api-key (or BASICOPS_API_KEY env). See --help.");
 
   const port = Number(args.port ?? process.env.PORT ?? 0); // 0 = auto-pick a free port
-  const mcpUrl =
-    (args["mcp-url"] as string) ??
-    `https://app.basicops.com/mcp?agent=${encodeURIComponent(agent)}`;
+  // The key alone identifies the agent; the ?agent= URL param is ignored.
+  const mcpUrl = (args["mcp-url"] as string) ?? "https://app.basicops.com/mcp";
   const projectId = args.project ? Number(args.project) : undefined;
   const explicitWebhook = args["webhook-url"] as string | undefined;
-  // Each concurrent agent mounts its own path on the shared :443 Funnel.
-  const rawPath = (args["funnel-path"] as string) ?? `/${agent}`;
-  const funnelPath = "/" + rawPath.replace(/^\/+/, "").replace(/\/+$/, "");
-
-  if (!apiKey) fail("Missing --api-key (or BASICOPS_API_KEY env). See --help.");
 
   const client = new BasicOpsClient(mcpUrl, apiKey);
 
-  // 1. Verify the key + agent identity.
-  c.step("Verifying API key & agent identity");
+  // 1. Verify the key and DISCOVER the agent (no name needed — the key is the agent).
+  c.step("Verifying key & detecting agent");
   const user = await client.call<{ id?: number; firstName?: string }>("get_current_user").catch((e) =>
     fail(`Could not authenticate to ${mcpUrl}\n  ${e.message}`),
   );
   const config = await client.call<{ agentId?: string; enabled?: boolean; ["Display name"]?: string }>(
     "get_agent_configuration",
   );
-  if (!user?.id) fail("Authenticated, but no user id returned — is this an agent connector?");
-  if (!config?.enabled) fail(`Agent "${config?.agentId ?? agent}" exists but is not enabled in BasicOps.`);
+  if (!user?.id) fail("Authenticated, but no user id returned — is this an agent connector key?");
+  const agent = config?.agentId;
+  if (!agent) fail("Could not determine the agent from this key.");
+  if (!config?.enabled)
+    fail(`Agent "${config["Display name"] ?? agent}" exists but is not enabled in BasicOps. Enable it and retry.`);
   const agentUserId = String(user.id);
-  const displayName = config["Display name"] ?? config.agentId ?? agent;
-  c.ok(`Authenticated as agent "${displayName}" (id ${agentUserId}, enabled)`);
+  const displayName = config["Display name"] ?? agent;
+  c.ok(`Detected agent "${displayName}" (agentId ${agent}, id ${agentUserId}, enabled)`);
+
+  // Funnel path defaults to the detected agent id (override with --funnel-path).
+  const rawPath = (args["funnel-path"] as string) ?? `/${agent}`;
+  const funnelPath = "/" + rawPath.replace(/^\/+/, "").replace(/\/+$/, "");
+
+  // Offer the persistent service (interactive only), now that we know the agent.
+  if (interactive && (await offerServiceInstall(apiKey, agent))) {
+    c.ok("Agent installed as a service and started. It will keep running and survive reboots.");
+    c.info(`Logs: journalctl -u basicops-agent-${agent} -f`);
+    return;
+  }
 
   // 2. Bind the listener first (so the Funnel has something to proxy to).
   c.step("Starting listener");

@@ -22,8 +22,7 @@ builds, connects Tailscale (approve in your browser), then launches the
 installer, which prompts:
 
 ```
-  BasicOps agent API key:  (hidden)
-  Agent name:              my-agent
+  BasicOps agent API key:  (hidden)   ← the agent is auto-detected from this key
   Checking Claude login…   → runs the Claude OAuth login if needed (open the URL)
   Run as a background service (survives logout/reboot)? [Y/n]  → Y
   (sudo password once)
