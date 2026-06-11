@@ -8,6 +8,7 @@
  * register the agent webhook → create a confirmation task → stay live.
  */
 import * as readline from "node:readline";
+import { spawn, execFile } from "node:child_process";
 import { BasicOpsClient } from "./basicops.js";
 import { startFunnel } from "./funnel.js";
 import { startListener } from "./listener.js";
@@ -59,31 +60,60 @@ function promptHidden(rl: readline.Interface, query: string): Promise<string> {
   });
 }
 
-/**
- * Interactive installer: prompt for the BasicOps key, agent name, and (optionally)
- * an Anthropic API key. Leaving the Anthropic key blank uses the machine's `claude`
- * login instead.
- */
+/** Interactive installer: prompt for the BasicOps key and agent name. */
 async function runInstaller(have: {
   apiKey?: string;
   agent?: string;
-}): Promise<{ apiKey: string; agent: string; anthropicApiKey?: string }> {
+}): Promise<{ apiKey: string; agent: string }> {
   console.log("\n\x1b[36m▶ basicops-connect installer\x1b[0m");
-  console.log("  Enter the agent details (input for keys is hidden).\n");
+  console.log("  Enter the agent details (the API key is hidden).\n");
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   try {
     const apiKey = have.apiKey || (await promptHidden(rl, "  BasicOps agent API key: "));
     const agent = have.agent || (await promptText(rl, "  Agent name: "));
-    const anthropicApiKey = await promptHidden(
-      rl,
-      "  Anthropic API key (press Enter to use your `claude` login): ",
-    );
     if (!apiKey) fail("BasicOps API key is required.");
     if (!agent) fail("Agent name is required.");
-    return { apiKey, agent, anthropicApiKey: anthropicApiKey || undefined };
+    return { apiKey, agent };
   } finally {
     rl.close();
   }
+}
+
+/** True if `claude auth status` reports a logged-in session. */
+function claudeLoggedIn(): Promise<boolean> {
+  return new Promise((resolve) => {
+    execFile("claude", ["auth", "status"], (err, stdout) => {
+      if (err) return resolve(false);
+      try {
+        resolve(JSON.parse(stdout).loggedIn === true);
+      } catch {
+        resolve(/"loggedIn"\s*:\s*true/.test(stdout));
+      }
+    });
+  });
+}
+
+/** Run the Claude OAuth login flow interactively (inherits the terminal). */
+function claudeLogin(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("claude", ["auth", "login"], { stdio: "inherit" });
+    child.on("error", reject);
+    child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`claude auth login exited with code ${code}`))));
+  });
+}
+
+/** Ensure the machine has a Claude login; launch the OAuth flow if not. */
+async function ensureClaudeLogin(): Promise<void> {
+  if (await claudeLoggedIn()) {
+    c.ok("Claude login detected");
+    return;
+  }
+  c.step("Logging in to Claude (OAuth) — follow the prompt / open the URL it shows");
+  await claudeLogin().catch((e) =>
+    fail(`Claude login failed: ${e.message}\n  Run \`claude auth login\` manually, then retry.`),
+  );
+  if (!(await claudeLoggedIn())) fail("Claude login didn't complete. Run `claude auth login`, then retry.");
+  c.ok("Claude login complete");
 }
 
 function printHelp() {
@@ -113,12 +143,13 @@ async function main() {
   let agent = (args.agent as string) ?? process.env.BASICOPS_AGENT;
 
   // Interactive installer: when the key or agent is missing and we're on a
-  // terminal, prompt for them. (Flags/env still work for headless / systemd.)
+  // terminal, prompt for them and ensure a Claude login. (Flags/env still work
+  // for headless / systemd.)
   if ((!apiKey || !agent) && process.stdin.isTTY) {
     const cfg = await runInstaller({ apiKey, agent });
     apiKey = cfg.apiKey;
     agent = cfg.agent;
-    if (cfg.anthropicApiKey) process.env.ANTHROPIC_API_KEY = cfg.anthropicApiKey;
+    await ensureClaudeLogin(); // step 3: Claude OAuth login flow
   }
   agent = agent ?? "claude";
 
