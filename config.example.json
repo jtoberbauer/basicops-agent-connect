@@ -1,0 +1,17 @@
+{
+  "//": "Copy to ~/.config/basicops-agent/<agent-slug>.json (e.g. claude-agent.json) and restart the service. All keys are optional.",
+
+  "mcpServers": {
+    "example-remote": {
+      "type": "http",
+      "url": "https://your-mcp-host.example.com/mcp",
+      "authToken": "REPLACE_WITH_BEARER_TOKEN"
+    }
+  },
+
+  "plugins": [
+    "/home/gus/basicops-agent-connect/plugins/basicops-extras"
+  ],
+
+  "allowedTools": []
+}

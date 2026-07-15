@@ -81,6 +81,37 @@ The API key can also be passed via env to keep it out of shell history:
 BASICOPS_API_KEY=bo_xxx basicops-connect
 ```
 
+## Adding skills & MCP connectors
+
+Give an agent extra abilities **without editing code** by dropping a JSON file at
+`~/.config/basicops-agent/<agent-slug>.json` (same slug as its `.env`, e.g.
+`claude-agent.json`) and restarting. Missing file → the agent runs exactly as
+before. See [config.example.json](config.example.json):
+
+```jsonc
+{
+  "mcpServers": {
+    "github": { "type": "http", "url": "https://…/mcp", "authToken": "…" }
+  },
+  "plugins": ["/home/gus/basicops-agent-connect/plugins/basicops-extras"],
+  "allowedTools": []
+}
+```
+
+- **`mcpServers`** — extra MCP connectors alongside the built-in `basicops`.
+  `authToken` becomes an `Authorization: Bearer` header. Each server is
+  auto-added to the tool allowlist as `mcp__<name>`. (`stdio` servers via
+  `command`/`args` also work if the binary is on the box.)
+- **`plugins`** — local [Claude Code plugin](https://docs.claude.com/en/docs/claude-code/plugins)
+  directories. Each bundles skills under `skills/<name>/SKILL.md`; the `Skill`
+  tool is enabled automatically when any plugin is loaded. A worked example
+  lives in [plugins/basicops-extras/](plugins/basicops-extras/).
+- **`allowedTools`** — extra built-in tools to permit (advanced). The destructive
+  BasicOps tools stay blocked regardless.
+
+On startup the agent logs what it loaded, and on the first message it logs the
+live skills + MCP server status (`[skills] …`, `[mcp] …`).
+
 ## How it works
 
 - [src/basicops.ts](src/basicops.ts) — a tiny stateless MCP JSON-RPC client used
@@ -89,6 +120,8 @@ BASICOPS_API_KEY=bo_xxx basicops-connect
   and derive the public MagicDNS URL.
 - [src/listener.ts](src/listener.ts) — the webhook server; generates replies with
   the Claude Agent SDK (per-chat memory, loop guard, destructive tools blocked).
+- [src/config.ts](src/config.ts) — loads the optional per-agent capability file
+  (extra MCP connectors + skill plugins).
 - [src/cli.ts](src/cli.ts) — argument parsing and the connect sequence.
 
 ## Security notes

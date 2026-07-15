@@ -5,12 +5,15 @@
  */
 import http from "node:http";
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import type { AgentCapabilities } from "./config.js";
 
 export type ListenerConfig = {
   mcpUrl: string;
   apiKey: string;
   agentUserId: string; // skip the agent's own messages (loop guard)
   port: number;
+  /** Optional extra MCP connectors + skill plugins from the per-agent config file. */
+  capabilities?: AgentCapabilities;
 };
 
 // Destructive tools the agent must never call (blocked even though the whole
@@ -64,6 +67,29 @@ function parseEvents(body: any, agentUserId: string): Incoming[] {
 export function startListener(cfg: ListenerConfig): Promise<number> {
   const sessions = new Map<number, string>(); // chatId -> Agent SDK session id
 
+  const caps = cfg.capabilities ?? { mcpServers: {}, plugins: [], allowedTools: [] };
+
+  // The built-in BasicOps connector, plus any extra ones from config.
+  const mcpServers = {
+    basicops: {
+      type: "http" as const,
+      url: cfg.mcpUrl,
+      headers: { Authorization: `Bearer ${cfg.apiKey}` },
+    },
+    ...caps.mcpServers,
+  };
+
+  // Allowlist: BasicOps + one entry per extra MCP server + `Skill` when plugins
+  // are loaded + any explicit extras. disallowedTools still blocks destructive ops.
+  const allowedTools = [
+    "mcp__basicops",
+    ...Object.keys(caps.mcpServers).map((name) => `mcp__${name}`),
+    ...(caps.plugins.length ? ["Skill"] : []),
+    ...caps.allowedTools,
+  ];
+
+  let loggedCapabilities = false;
+
   async function handleMessage(chatId: number, text: string, messageId?: string) {
     const resume = sessions.get(chatId);
     const statusLine = messageId
@@ -76,19 +102,18 @@ export function startListener(cfg: ListenerConfig): Promise<number> {
       prompt: `A user sent this message in BasicOps chat ${chatId}:\n\n"${text}"\n\n${statusLine}`,
       options: {
         resume,
-        mcpServers: {
-          basicops: {
-            type: "http",
-            url: cfg.mcpUrl,
-            headers: { Authorization: `Bearer ${cfg.apiKey}` },
-          },
-        },
-        allowedTools: ["mcp__basicops"],
+        mcpServers,
+        plugins: caps.plugins,
+        allowedTools,
         disallowedTools: BLOCKED_TOOLS,
         systemPrompt:
           "You are a helpful assistant replying to messages in BasicOps. Be concise " +
-          "and friendly. Always post your reply with create_message_in_chat using the " +
-          "chatId you were given, then clear your status with set_agent_status status='done'.",
+          "and friendly. When a Skill is available that matches the user's request, " +
+          "invoke it and follow it instead of answering from general knowledge — this " +
+          "is essential for questions about extending, configuring, or connecting you " +
+          "to other tools/services, where guessing produces wrong steps. Always post " +
+          "your reply with create_message_in_chat using the chatId you were given, then " +
+          "clear your status with set_agent_status status='done'.",
         maxTurns: 10,
         stderr: (d: string) => {
           const line = d.trim();
@@ -98,7 +123,14 @@ export function startListener(cfg: ListenerConfig): Promise<number> {
     });
 
     for await (const m of response) {
-      if (m.type === "assistant") {
+      if (m.type === "system" && (m as any).subtype === "init" && !loggedCapabilities) {
+        loggedCapabilities = true;
+        const sys = m as any;
+        const skills = (sys.skills ?? []).filter((s: string) => s !== "none");
+        const servers = (sys.mcp_servers ?? []).map((s: any) => `${s.name}(${s.status})`);
+        if (servers.length) console.log(`  [mcp] ${servers.join(", ")}`);
+        if (skills.length) console.log(`  [skills] ${skills.join(", ")}`);
+      } else if (m.type === "assistant") {
         for (const b of m.message.content as any[]) {
           if (b.type === "tool_use") console.log(`  [tool] ${b.name}`);
         }

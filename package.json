@@ -6,9 +6,9 @@
   "bin": {
     "basicops-connect": "dist/bin.js"
   },
-  "files": ["dist", "scripts", "README.md", "DEPLOY.md"],
+  "files": ["dist", "scripts", "plugins", "README.md", "DEPLOY.md"],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && chmod +x dist/bin.js",
     "dev": "tsx src/cli.ts",
     "start": "node dist/cli.js",
     "typecheck": "tsc --noEmit",

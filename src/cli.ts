@@ -10,10 +10,11 @@
 import * as readline from "node:readline";
 import { spawn, execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { BasicOpsClient } from "./basicops.js";
 import { startFunnel } from "./funnel.js";
 import { startListener } from "./listener.js";
+import { loadCapabilities, configPath } from "./config.js";
 
 type Args = Record<string, string | boolean>;
 
@@ -237,9 +238,19 @@ async function main() {
     return;
   }
 
+  // Load capabilities: bundled default skills (always) + optional config file
+  // (extra MCP connectors + skill plugins the operator added).
+  const capabilities = loadCapabilities(agent);
+  const nServers = Object.keys(capabilities.mcpServers).length;
+  c.step("Loading capabilities");
+  const pluginNames = capabilities.plugins.map((p) => basename(p.path));
+  c.ok(`Skill plugins: ${pluginNames.length ? pluginNames.join(", ") : "(none)"}`);
+  if (nServers) c.ok(`Extra MCP connectors: ${Object.keys(capabilities.mcpServers).join(", ")}`);
+  c.info(`Add more (skills / MCP) at ${configPath(agent)}`);
+
   // 2. Bind the listener first (so the Funnel has something to proxy to).
   c.step("Starting listener");
-  const boundPort = await startListener({ mcpUrl, apiKey, agentUserId, port });
+  const boundPort = await startListener({ mcpUrl, apiKey, agentUserId, port, capabilities });
   c.ok(`Listener is up on port ${boundPort}`);
 
   // 3. Public URL — Tailscale Funnel at this agent's path (unless one was provided).

@@ -1,0 +1,5 @@
+{
+  "name": "basicops-default",
+  "version": "0.1.0",
+  "description": "Default skills bundled with every BasicOps agent. Loaded automatically; no config required."
+}
