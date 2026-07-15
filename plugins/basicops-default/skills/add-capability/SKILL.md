@@ -27,7 +27,19 @@ Use that slug to fill in `<slug>` everywhere below.
 Tell them the config lives at `~/.config/basicops-agent/<slug>.json` (create it if
 it doesn't exist). All keys are optional. Give them only the part they asked for.
 
-**To add an MCP connector** (most connectors are remote HTTP with a bearer token):
+**First, look up the REAL connector details — do not guess them.** You have
+`WebSearch` and `WebFetch`. Before writing any config, search for the official MCP
+server for the service the user named (e.g. "official Gmail MCP server",
+"GitHub MCP server url"), and `WebFetch` its docs/README to get the *actual*:
+- transport and endpoint — a remote **HTTP url**, or a **stdio** `command`/`args`
+  (many official servers are stdio, e.g. run via `npx`/Docker on the box);
+- what auth it needs (token/OAuth) and how to obtain it.
+Never invent a URL or package name. If you can't find an official server, say so
+plainly and point them at the MCP directory (e.g. modelcontextprotocol.io) rather
+than making one up.
+
+**To add an MCP connector** (remote HTTP with a bearer token shown here; use the
+real values you found above):
 
 ```json
 {
@@ -45,6 +57,21 @@ it doesn't exist). All keys are optional. Give them only the part they asked for
   `mcp__CONNECTOR_NAME`, allowed automatically.
 - The `authToken` is sent as `Authorization: Bearer …`. Remind them to paste the
   real token **into the file on the server**, not into this chat.
+
+If the official server is **stdio** (runs as a command on the box), use this shape
+instead — and warn them the command must be installed on the server:
+
+```json
+{
+  "mcpServers": {
+    "CONNECTOR_NAME": {
+      "command": "npx",
+      "args": ["-y", "@scope/the-mcp-server"],
+      "env": { "SOME_TOKEN": "PUT_TOKEN_HERE_ON_THE_SERVER" }
+    }
+  }
+}
+```
 
 **To add a skill**, skills live inside a *plugin folder*. Simplest path — reuse the
 bundled example folder, or point at their own:

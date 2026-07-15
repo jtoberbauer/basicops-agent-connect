@@ -79,10 +79,14 @@ export function startListener(cfg: ListenerConfig): Promise<number> {
     ...caps.mcpServers,
   };
 
-  // Allowlist: BasicOps + one entry per extra MCP server + `Skill` when plugins
-  // are loaded + any explicit extras. disallowedTools still blocks destructive ops.
+  // Allowlist: BasicOps + web research (so the agent can look up REAL MCP setup
+  // instructions instead of guessing) + one entry per extra MCP server + `Skill`
+  // when plugins load + any explicit extras. disallowedTools still blocks
+  // destructive ops; the agent has no filesystem/shell access.
   const allowedTools = [
     "mcp__basicops",
+    "WebSearch",
+    "WebFetch",
     ...Object.keys(caps.mcpServers).map((name) => `mcp__${name}`),
     ...(caps.plugins.length ? ["Skill"] : []),
     ...caps.allowedTools,
