@@ -12,7 +12,7 @@ import { spawn, execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { basename, dirname, join } from "node:path";
 import { BasicOpsClient } from "./basicops.js";
-import { startFunnel } from "./funnel.js";
+import { startFunnel, funnelHelp, tailscaleStatus, tailscaleUp, funnelAvailable } from "./funnel.js";
 import { startListener } from "./listener.js";
 import { loadCapabilities, configPath } from "./config.js";
 
@@ -48,6 +48,18 @@ function fail(msg: string): never {
 
 function promptText(rl: readline.Interface, query: string): Promise<string> {
   return new Promise((resolve) => rl.question(query, (a) => resolve(a.trim())));
+}
+
+// One-shot prompt: opens and closes its own readline, so nothing holds stdin
+// open across a spawned child (e.g. `tailscale up`) that also reads the TTY.
+function ask(query: string): Promise<string> {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) =>
+    rl.question(query, (a) => {
+      rl.close();
+      resolve(a.trim());
+    }),
+  );
 }
 
 // Strip bracketed-paste markers + control chars some terminals inject on paste.
@@ -135,6 +147,59 @@ async function ensureClaudeLogin(): Promise<void> {
     fail('Claude login still not working. Run `claude auth login`, verify with `claude -p "say ok"`, then retry.');
   }
   c.ok("Claude login works");
+}
+
+/**
+ * Interactive Tailscale readiness check, run BEFORE we hand off to a background
+ * service (once installed, the funnel opens non-interactively, so this is our
+ * only chance to guide the user). Ensures: (1) they're connected to Tailscale —
+ * walking a brand-new user through creating an account + `tailscale up`; and
+ * (2) Funnel is enabled on their tailnet — the one-time admin step new users
+ * miss. Returns false only if the user chooses to skip Tailscale (they must then
+ * provide --webhook-url).
+ */
+async function tailscalePreflight(): Promise<boolean> {
+  c.step("Checking Tailscale (used to expose the agent's webhook)");
+
+  // 1. Connected? (Backend "Running" = logged in.)
+  let state = await tailscaleStatus();
+  if (!state.installed) {
+    fail("Tailscale isn't installed. Install it (https://tailscale.com/download), or pass --webhook-url to skip it.");
+  }
+  if (state.backendState !== "Running") {
+    const have = (await ask("  Do you already have a Tailscale account? [Y/n] ")).toLowerCase();
+    if (have === "n" || have === "no") {
+      c.info("No problem — it's free. When the browser opens next, choose “Sign up”.");
+      c.info("  (Or sign up first at https://login.tailscale.com/start)");
+      await ask("  Press Enter when you're ready to connect this machine… ");
+    }
+    c.step("Connecting this machine to Tailscale — open the URL it prints and approve");
+    await tailscaleUp().catch((e) =>
+      fail(`Couldn't connect Tailscale: ${e.message}\n  Run \`sudo tailscale up\` manually, then retry.`),
+    );
+    state = await tailscaleStatus();
+    if (state.backendState !== "Running") {
+      fail("Tailscale still isn't connected. Run `sudo tailscale up`, then retry.");
+    }
+  }
+  c.ok(`Tailscale connected${state.dns ? ` (${state.dns})` : ""}`);
+
+  // 2. Funnel enabled? Loop until it is, or the user skips.
+  for (;;) {
+    const probe = await funnelAvailable();
+    if (probe.ok) {
+      c.ok("Funnel is enabled");
+      return true;
+    }
+    console.log("\n" + funnelHelp(probe.error ?? ""));
+    const ans = (
+      await ask("\n  Press Enter to re-check after enabling Funnel, or type 's' to skip Tailscale: ")
+    ).toLowerCase();
+    if (ans === "s" || ans === "skip") {
+      c.info("Skipping Tailscale. Re-run with --webhook-url <your-own-public-https-url>.");
+      return false;
+    }
+  }
 }
 
 /**
@@ -230,6 +295,16 @@ async function main() {
   // Funnel path defaults to the detected agent id (override with --funnel-path).
   const rawPath = (args["funnel-path"] as string) ?? `/${agent}`;
   const funnelPath = "/" + rawPath.replace(/^\/+/, "").replace(/\/+$/, "");
+
+  // Tailscale readiness (interactive only, and only when using the Funnel):
+  // guide the user through account + `tailscale up` + enabling Funnel, BEFORE a
+  // possible service hand-off (where the funnel would open non-interactively).
+  if (interactive && !explicitWebhook) {
+    const ready = await tailscalePreflight();
+    if (!ready) {
+      fail("Tailscale skipped. Re-run with --webhook-url <your-own-public-https-url> to use your own endpoint.");
+    }
+  }
 
   // Offer the persistent service (interactive only), now that we know the agent.
   if (interactive && (await offerServiceInstall(apiKey, agent))) {

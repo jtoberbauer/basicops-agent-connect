@@ -53,13 +53,8 @@ npm install
 npm run build
 npm link
 
-# 5. Ensure Tailscale is connected (needed for the public webhook Funnel)
-if ! tailscale status --json 2>/dev/null | grep -q '"BackendState": *"Running"'; then
-  say "Connecting Tailscale — approve in your browser when prompted…"
-  sudo tailscale up || { echo "✗ Tailscale didn't come up. Run 'sudo tailscale up', then 'basicops-connect'."; exit 1; }
-fi
-
-# 6. Launch the interactive installer (prompts for key + agent, handles the
-#    Claude login, and offers to install a persistent service).
+# 5. Launch the interactive installer. It prompts for the key, handles the Claude
+#    login, then walks you through Tailscale readiness (account + `tailscale up` +
+#    enabling Funnel) and offers to install a persistent service.
 say "Launching the installer…"
 exec node "$(pwd)/dist/bin.js"

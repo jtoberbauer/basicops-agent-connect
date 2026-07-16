@@ -4,7 +4,7 @@
  * machine concurrently. Tailscale strips the path prefix before proxying, so the
  * listener still receives "/webhook".
  */
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 
 const pexec = promisify(execFile);
@@ -32,6 +32,55 @@ async function resolveTailscale(): Promise<string> {
 }
 
 export type Funnel = { url: string; stop: () => Promise<void> };
+
+/** Current Tailscale backend state + MagicDNS name (for readiness checks). */
+export async function tailscaleStatus(): Promise<{ installed: boolean; backendState: string; dns?: string }> {
+  let ts: string;
+  try {
+    ts = await resolveTailscale();
+  } catch {
+    return { installed: false, backendState: "NotInstalled" };
+  }
+  try {
+    const { stdout } = await pexec(ts, ["status", "--json"]);
+    const s = JSON.parse(stdout);
+    const dns = String(s?.Self?.DNSName ?? "").replace(/\.$/, "");
+    return { installed: true, backendState: String(s?.BackendState ?? "Unknown"), dns: dns || undefined };
+  } catch {
+    return { installed: true, backendState: "Stopped" };
+  }
+}
+
+/** Run `tailscale up` interactively (inherits the terminal for the browser auth). */
+export async function tailscaleUp(): Promise<void> {
+  const ts = await resolveTailscale();
+  const [cmd, args] = process.platform === "linux" ? ["sudo", [ts, "up"]] : [ts, ["up"]];
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(cmd, args, { stdio: "inherit" });
+    child.on("error", reject);
+    child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`\`tailscale up\` exited with code ${code}`))));
+  });
+}
+
+/**
+ * Probe whether Funnel is permitted on this tailnet, without needing the real
+ * listener: briefly register a throwaway funnel mount and remove it. Success
+ * means Funnel is enabled; failure returns the raw error (for guidance). This is
+ * how we catch a brand-new tailnet where Funnel hasn't been enabled yet.
+ */
+export async function funnelAvailable(): Promise<{ ok: boolean; error?: string }> {
+  const ts = await resolveTailscale();
+  const probe = "/__basicops_preflight__";
+  try {
+    await pexec(ts, ["funnel", "--bg", `--set-path=${probe}`, "1"]);
+    await pexec(ts, ["funnel", `--set-path=${probe}`, "off"]).catch(() => {}); // clean up
+    return { ok: true };
+  } catch (e: any) {
+    await pexec(ts, ["funnel", `--set-path=${probe}`, "off"]).catch(() => {}); // best-effort
+    const raw = `${e?.stdout ?? ""}${e?.stderr ?? ""}`.trim() || String(e?.message ?? e);
+    return { ok: false, error: raw };
+  }
+}
 
 /**
  * Build an actionable message for a failed `tailscale funnel` call. The common
