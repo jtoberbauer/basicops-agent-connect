@@ -15,7 +15,11 @@ that runs you** — you cannot edit it yourself. Your job is to hand the operato
   JSON", or "paste this into the config". Every change must be a shell command they
   can paste as-is. Assume they will copy one block and run it.
 - **Fill in the real values.** Use the actual slug, connector name, and researched
-  URL/command — no `<placeholders>` except the one secret handled by `read`.
+  URL/command — no `<placeholders>` except the one secret handled by `read`. For a
+  **skill**, write the COMPLETE `SKILL.md` content — a real `name`, a real
+  `description` (the trigger), and the full instruction body tailored to exactly
+  what they asked for. Never hand back `SKILL_NAME` or "step-by-step instructions
+  here" — author the actual skill.
 - **Merge, never overwrite.** Always use the `node` one-liners below (node is
   guaranteed installed — it runs this agent). They preserve existing config.
 - **Secrets via hidden prompt, never in chat.** Tokens are entered locally with
@@ -77,23 +81,36 @@ sleep 3 && journalctl -u basicops-agent-claude-agent -n 20 --no-pager | grep -Ei
 
 ### Add a skill
 
-Creates the plugin + skill files and registers the folder — all commands. Fill in
-`SKILL_NAME`, the `description`, and the instruction body:
+**Write the whole skill for them.** From their request, compose: a short kebab-case
+skill name, a one-line `description` that says exactly WHEN you should use the skill
+(these are the trigger phrases — make them match how they'd actually ask), and a
+complete instruction body with concrete steps. If the skill needs domain facts
+(an API shape, a format), `WebSearch`/`WebFetch` them first so the body is correct.
+Then bake all of that directly into the heredoc below — the operator runs it as-is.
+
+Everything in this block is filled in with real content (name, description, body)
+except nothing — there are no fields left for them to edit:
 
 ````bash
-PLUG=~/basicops-plugins/custom
-mkdir -p "$PLUG/.claude-plugin" "$PLUG/skills/SKILL_NAME"
+PLUG=~/basicops-plugins/pdf-summary
+mkdir -p "$PLUG/.claude-plugin" "$PLUG/skills/summarize-pdf"
 cat > "$PLUG/.claude-plugin/plugin.json" <<'JSON'
-{ "name": "custom", "version": "0.1.0", "description": "Custom skills" }
+{ "name": "pdf-summary", "version": "0.1.0", "description": "Summarize PDFs shared in chat" }
 JSON
-cat > "$PLUG/skills/SKILL_NAME/SKILL.md" <<'MD'
+cat > "$PLUG/skills/summarize-pdf/SKILL.md" <<'MD'
 ---
-name: SKILL_NAME
-description: One line telling the agent WHEN to use this skill.
+name: summarize-pdf
+description: Summarize a PDF when the user shares a PDF file or link, or asks for the key points, TL;DR, or action items of a document.
 ---
 
-# What to do
-Step-by-step instructions for the agent...
+# Summarize a PDF
+
+1. Fetch the document (use WebFetch for a URL; for an uploaded file use the file
+   the user provided).
+2. Produce a tight summary: a 2-sentence TL;DR, then 3-6 bullet key points, then
+   any action items or decisions.
+3. Keep it under ~200 words unless they ask for more. Do not invent content that
+   isn't in the document.
 MD
 node -e '
 const fs=require("fs"), p=require("os").homedir()+"/.config/basicops-agent/claude-agent.json";
@@ -104,6 +121,11 @@ fs.writeFileSync(p,JSON.stringify(c,null,2)); console.log("Registered "+dir);' "
 sudo systemctl restart basicops-agent-claude-agent.service
 sleep 3 && journalctl -u basicops-agent-claude-agent -n 20 --no-pager | grep -Ei "connector|skill|live"
 ````
+
+That example is for a PDF-summary request — replace the plugin dir, skill name,
+description, and body with content authored for THEIR actual request. Any tools the
+new skill relies on (e.g. `WebFetch`) must be ones the agent already has, or a
+connector added separately.
 
 ## Step 4 — what success looks like
 
