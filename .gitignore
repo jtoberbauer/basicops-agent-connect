@@ -3,3 +3,4 @@ dist/
 .env
 *.log
 *.tgz
+basicops-agent-connect/
