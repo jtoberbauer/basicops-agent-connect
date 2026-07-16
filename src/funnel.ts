@@ -63,6 +63,31 @@ export async function tailscaleUp(): Promise<void> {
 }
 
 /**
+ * Run `tailscale funnel …` with **stdin closed** and a timeout. Critical: on a
+ * Funnel-disabled tailnet, `tailscale funnel` prints an interactive
+ * "enable Funnel? [y/N]" prompt and blocks. Closing stdin gives it EOF so it
+ * aborts (non-zero) instead of hanging; the timeout is a backstop. On success it
+ * resolves; on failure it rejects with the combined output for guidance.
+ */
+function runFunnel(ts: string, args: string[], timeoutMs = 45000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(ts, ["funnel", ...args], { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    child.stdout?.on("data", (d) => (out += d));
+    child.stderr?.on("data", (d) => (out += d));
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error(out.trim() || "`tailscale funnel` timed out with no response (is Funnel enabled?)"));
+    }, timeoutMs);
+    child.on("error", (e) => (clearTimeout(timer), reject(e)));
+    child.on("exit", (code) => {
+      clearTimeout(timer);
+      code === 0 ? resolve() : reject(new Error(out.trim() || `\`tailscale funnel\` exited with code ${code}`));
+    });
+  });
+}
+
+/**
  * Probe whether Funnel is permitted on this tailnet, without needing the real
  * listener: briefly register a throwaway funnel mount and remove it. Success
  * means Funnel is enabled; failure returns the raw error (for guidance). This is
@@ -72,13 +97,12 @@ export async function funnelAvailable(): Promise<{ ok: boolean; error?: string }
   const ts = await resolveTailscale();
   const probe = "/__basicops_preflight__";
   try {
-    await pexec(ts, ["funnel", "--bg", `--set-path=${probe}`, "1"]);
-    await pexec(ts, ["funnel", `--set-path=${probe}`, "off"]).catch(() => {}); // clean up
+    await runFunnel(ts, ["--bg", `--set-path=${probe}`, "1"]);
+    await runFunnel(ts, [`--set-path=${probe}`, "off"]).catch(() => {}); // clean up
     return { ok: true };
   } catch (e: any) {
-    await pexec(ts, ["funnel", `--set-path=${probe}`, "off"]).catch(() => {}); // best-effort
-    const raw = `${e?.stdout ?? ""}${e?.stderr ?? ""}`.trim() || String(e?.message ?? e);
-    return { ok: false, error: raw };
+    await runFunnel(ts, [`--set-path=${probe}`, "off"]).catch(() => {}); // best-effort
+    return { ok: false, error: String(e?.message ?? e) };
   }
 }
 
@@ -125,21 +149,17 @@ export async function startFunnel(port: number, path: string): Promise<Funnel> {
   }
 
   try {
-    await pexec(ts, ["funnel", "--bg", `--set-path=${path}`, String(port)]);
+    // stdin-closed + timeout: never hang on the "enable Funnel? [y/N]" prompt.
+    await runFunnel(ts, ["--bg", `--set-path=${path}`, String(port)]);
   } catch (e: any) {
     // Turn the raw "funnel not enabled" failure into actionable enable steps.
-    const raw = `${e?.stdout ?? ""}${e?.stderr ?? ""}`.trim() || String(e?.message ?? e);
-    throw new Error(funnelHelp(raw));
+    throw new Error(funnelHelp(String(e?.message ?? e)));
   }
 
   return {
     url: `https://${dns}${path}`,
     stop: async () => {
-      try {
-        await pexec(ts, ["funnel", `--set-path=${path}`, "off"]);
-      } catch {
-        /* best effort */
-      }
+      await runFunnel(ts, [`--set-path=${path}`, "off"]).catch(() => {}); // best effort
     },
   };
 }
