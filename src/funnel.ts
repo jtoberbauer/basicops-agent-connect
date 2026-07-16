@@ -63,47 +63,57 @@ export async function tailscaleUp(): Promise<void> {
 }
 
 /**
- * Run `tailscale funnel …` with **stdin closed** and a timeout. Critical: on a
- * Funnel-disabled tailnet, `tailscale funnel` prints an interactive
- * "enable Funnel? [y/N]" prompt and blocks. Closing stdin gives it EOF so it
- * aborts (non-zero) instead of hanging; the timeout is a backstop. On success it
- * resolves; on failure it rejects with the combined output for guidance.
+ * Run `tailscale funnel …` without hanging. On a Funnel-DISABLED tailnet the
+ * command prints "Funnel is not enabled…" (with an enable URL) and then blocks
+ * indefinitely — it does NOT wait on stdin and does NOT exit. So we watch its
+ * output and abort the instant we see that signal, giving immediate guidance
+ * instead of a long stall. The timeout only backstops other stalls (e.g. a slow
+ * first-time TLS cert on an ENABLED tailnet — hence generous). Resolves
+ * {ok, out}; never rejects.
  */
-function runFunnel(ts: string, args: string[], timeoutMs = 45000): Promise<void> {
-  return new Promise((resolve, reject) => {
+function funnelExec(ts: string, args: string[], timeoutMs = 60000): Promise<{ ok: boolean; out: string }> {
+  return new Promise((resolve) => {
     const child = spawn(ts, ["funnel", ...args], { stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
-    child.stdout?.on("data", (d) => (out += d));
-    child.stderr?.on("data", (d) => (out += d));
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(new Error(out.trim() || "`tailscale funnel` timed out with no response (is Funnel enabled?)"));
-    }, timeoutMs);
-    child.on("error", (e) => (clearTimeout(timer), reject(e)));
-    child.on("exit", (code) => {
+    let settled = false;
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
-      code === 0 ? resolve() : reject(new Error(out.trim() || `\`tailscale funnel\` exited with code ${code}`));
-    });
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        /* already gone */
+      }
+      resolve({ ok, out: out.trim() });
+    };
+    const onData = (d: Buffer) => {
+      out += d.toString();
+      if (/not enabled|\/f\/funnel|funnel\?node=/i.test(out)) finish(false); // don't wait — it never exits
+    };
+    child.stdout?.on("data", onData);
+    child.stderr?.on("data", onData);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    child.on("error", () => finish(false));
+    child.on("exit", (code) => finish(code === 0));
   });
 }
 
 /**
  * Probe whether Funnel is permitted on this tailnet, without needing the real
  * listener: briefly register a throwaway funnel mount and remove it. Success
- * means Funnel is enabled; failure returns the raw error (for guidance). This is
- * how we catch a brand-new tailnet where Funnel hasn't been enabled yet.
+ * means Funnel is enabled; a failure returns the raw Tailscale output (for
+ * guidance). This is how we catch a brand-new tailnet where Funnel isn't enabled.
  */
 export async function funnelAvailable(): Promise<{ ok: boolean; error?: string }> {
   const ts = await resolveTailscale();
   const probe = "/__basicops_preflight__";
-  try {
-    await runFunnel(ts, ["--bg", `--set-path=${probe}`, "1"]);
-    await runFunnel(ts, [`--set-path=${probe}`, "off"]).catch(() => {}); // clean up
+  const r = await funnelExec(ts, ["--bg", `--set-path=${probe}`, "1"]);
+  if (r.ok) {
+    await funnelExec(ts, [`--set-path=${probe}`, "off"], 8000); // remove the probe mount
     return { ok: true };
-  } catch (e: any) {
-    await runFunnel(ts, [`--set-path=${probe}`, "off"]).catch(() => {}); // best-effort
-    return { ok: false, error: String(e?.message ?? e) };
   }
+  return { ok: false, error: r.out };
 }
 
 /**
@@ -148,18 +158,14 @@ export async function startFunnel(port: number, path: string): Promise<Funnel> {
     throw new Error("Could not determine Tailscale MagicDNS name. Is Tailscale logged in? Run `tailscale up`.");
   }
 
-  try {
-    // stdin-closed + timeout: never hang on the "enable Funnel? [y/N]" prompt.
-    await runFunnel(ts, ["--bg", `--set-path=${path}`, String(port)]);
-  } catch (e: any) {
-    // Turn the raw "funnel not enabled" failure into actionable enable steps.
-    throw new Error(funnelHelp(String(e?.message ?? e)));
-  }
+  // Fail-fast on "not enabled" (never hangs); turn it into actionable steps.
+  const r = await funnelExec(ts, ["--bg", `--set-path=${path}`, String(port)]);
+  if (!r.ok) throw new Error(funnelHelp(r.out));
 
   return {
     url: `https://${dns}${path}`,
     stop: async () => {
-      await runFunnel(ts, [`--set-path=${path}`, "off"]).catch(() => {}); // best effort
+      await funnelExec(ts, [`--set-path=${path}`, "off"], 8000); // best effort
     },
   };
 }
