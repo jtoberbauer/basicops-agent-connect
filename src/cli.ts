@@ -372,15 +372,31 @@ async function main() {
   //    --project isn't given we use the first project in the workspace.
   c.step("Creating confirmation task");
   let taskProject = projectId;
+  let skipReason: string | undefined;
   if (!taskProject) {
-    const projects = await client.call<any>("list_projects");
-    const list = Array.isArray(projects?.data) ? projects.data : Array.isArray(projects) ? projects : [];
-    taskProject = list[0]?.id;
-    if (taskProject) c.info(`Using project "${list[0]?.title ?? list[0]?.name ?? taskProject}" (id ${taskProject})`);
+    let projects: any;
+    try {
+      projects = await client.call<any>("list_projects");
+    } catch (e: any) {
+      skipReason = `couldn't list projects (${e.message})`;
+    }
+    if (!skipReason) {
+      // The MCP endpoint returns tool errors as a text result (e.g. "not
+      // authenticated") rather than throwing — treat any non-list response as a
+      // real failure, so it never silently masquerades as "no projects".
+      if (typeof projects === "string") {
+        skipReason = `couldn't list projects (${projects})`;
+      } else {
+        const list = Array.isArray(projects?.data) ? projects.data : Array.isArray(projects) ? projects : [];
+        taskProject = list[0]?.id;
+        if (taskProject) c.info(`Using project "${list[0]?.title ?? list[0]?.name ?? taskProject}" (id ${taskProject})`);
+        else skipReason = "no projects in this workspace";
+      }
+    }
   }
 
   if (!taskProject) {
-    c.info("⚠ No project found and no --project given — skipping task creation.");
+    c.info(`⚠ Skipping confirmation task — ${skipReason ?? "no project"}. Pass --project <id> to pick one.`);
   } else {
     const task = await client.call<{ id?: number; url?: string }>("create_task", {
       title: `✅ Agent "${displayName}" connected`,
