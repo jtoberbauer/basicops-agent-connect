@@ -6,6 +6,7 @@
  */
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
+import * as os from "node:os";
 
 const pexec = promisify(execFile);
 
@@ -51,15 +52,38 @@ export async function tailscaleStatus(): Promise<{ installed: boolean; backendSt
   }
 }
 
-/** Run `tailscale up` interactively (inherits the terminal for the browser auth). */
-export async function tailscaleUp(): Promise<void> {
-  const ts = await resolveTailscale();
-  const [cmd, args] = process.platform === "linux" ? ["sudo", [ts, "up"]] : [ts, ["up"]];
-  await new Promise<void>((resolve, reject) => {
+/** Spawn a tailscale command inheriting the terminal (for auth / sudo prompts). */
+function spawnInherit(cmd: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { stdio: "inherit" });
     child.on("error", reject);
-    child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`\`tailscale up\` exited with code ${code}`))));
+    child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`\`${cmd} ${args.join(" ")}\` exited with code ${code}`))));
   });
+}
+
+/**
+ * Run `tailscale up` interactively. On Linux we set `--operator=<user>` so the
+ * agent's own (non-root) user may manage Funnel afterward — otherwise
+ * `tailscale funnel` is denied ("serve config denied") and the whole setup fails.
+ */
+export async function tailscaleUp(): Promise<void> {
+  const ts = await resolveTailscale();
+  const user = os.userInfo().username;
+  if (process.platform === "linux") return spawnInherit("sudo", [ts, "up", `--operator=${user}`]);
+  return spawnInherit(ts, ["up"]);
+}
+
+/** Grant the current (non-root) user permission to manage Funnel/Serve. */
+export async function setTailscaleOperator(): Promise<void> {
+  const ts = await resolveTailscale();
+  const user = os.userInfo().username;
+  if (process.platform === "linux") return spawnInherit("sudo", [ts, "set", `--operator=${user}`]);
+  return spawnInherit(ts, ["set", `--operator=${user}`]);
+}
+
+/** True if a funnel failure is a permission/operator issue (fixable via operator). */
+export function isOperatorError(out: string): boolean {
+  return /serve config denied|access denied|--operator|not require root|permission denied/i.test(out);
 }
 
 /**

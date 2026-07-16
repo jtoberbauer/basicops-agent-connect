@@ -12,7 +12,15 @@ import { spawn, execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { basename, dirname, join } from "node:path";
 import { BasicOpsClient } from "./basicops.js";
-import { startFunnel, funnelHelp, tailscaleStatus, tailscaleUp, funnelAvailable } from "./funnel.js";
+import {
+  startFunnel,
+  funnelHelp,
+  tailscaleStatus,
+  tailscaleUp,
+  funnelAvailable,
+  setTailscaleOperator,
+  isOperatorError,
+} from "./funnel.js";
 import { startListener } from "./listener.js";
 import { loadCapabilities, configPath } from "./config.js";
 
@@ -184,12 +192,21 @@ async function tailscalePreflight(): Promise<boolean> {
   }
   c.ok(`Tailscale connected${state.dns ? ` (${state.dns})` : ""}`);
 
-  // 2. Funnel enabled? Loop until it is, or the user skips.
+  // 2. Funnel usable? Loop until it is, or the user skips. First auto-fix the
+  //    common "operator not set" permission error (root owns the tailnet after
+  //    `sudo tailscale up`, so the agent's user can't manage Funnel).
+  let triedOperator = false;
   for (;;) {
     const probe = await funnelAvailable();
     if (probe.ok) {
-      c.ok("Funnel is enabled");
+      c.ok("Funnel is ready");
       return true;
+    }
+    if (!triedOperator && isOperatorError(probe.error ?? "")) {
+      triedOperator = true;
+      c.step("Granting your user permission to manage Funnel (sudo may prompt for your password)");
+      await setTailscaleOperator().catch((e) => c.info(`Couldn't set operator automatically: ${e.message}`));
+      continue; // re-probe
     }
     console.log("\n" + funnelHelp(probe.error ?? ""));
     const ans = (
