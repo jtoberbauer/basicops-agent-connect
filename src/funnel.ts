@@ -34,6 +34,33 @@ async function resolveTailscale(): Promise<string> {
 export type Funnel = { url: string; stop: () => Promise<void> };
 
 /**
+ * Build an actionable message for a failed `tailscale funnel` call. The common
+ * cause on a fresh tailnet is that Funnel simply isn't enabled yet — a one-time
+ * admin action Tailscale requires and that we cannot do for the user. We always
+ * include the raw Tailscale output so unrelated failures stay visible.
+ */
+export function funnelHelp(raw: string): string {
+  const link = raw.match(/https:\/\/login\.tailscale\.com\/\S+/)?.[0];
+  return [
+    "Couldn't open the Tailscale Funnel.",
+    "",
+    "This usually means Funnel isn't enabled on your tailnet yet. It has to be",
+    "turned on once by the tailnet admin (it can't be enabled from here):",
+    "",
+    "  1. Enable HTTPS certificates:",
+    "       https://login.tailscale.com/admin/dns  → turn on “HTTPS Certificates”",
+    "  2. Enable Funnel — add this to your policy file at",
+    "       https://login.tailscale.com/admin/acls :",
+    '       "nodeAttrs": [{ "target": ["autogroup:member"], "attr": ["funnel"] }]',
+    ...(link ? ["", `  Or use the link Tailscale printed: ${link}`] : []),
+    "",
+    "Then re-run this installer. To skip Tailscale entirely, pass",
+    "  --webhook-url <your-own-public-https-url>",
+    ...(raw ? ["", "Tailscale said:", ...raw.split(/\r?\n/).map((l) => `  ${l}`)] : []),
+  ].join("\n");
+}
+
+/**
  * Mount http://localhost:<port> at <path> on the public :443 Funnel.
  * Multiple agents each use their own <path> (e.g. "/claude", "/support-bot")
  * and coexist. Stopping one removes only its mount.
@@ -45,10 +72,16 @@ export async function startFunnel(port: number, path: string): Promise<Funnel> {
   const status = JSON.parse(stdout);
   const dns = String(status?.Self?.DNSName ?? "").replace(/\.$/, "");
   if (!dns) {
-    throw new Error("Could not determine Tailscale MagicDNS name. Is Tailscale logged in?");
+    throw new Error("Could not determine Tailscale MagicDNS name. Is Tailscale logged in? Run `tailscale up`.");
   }
 
-  await pexec(ts, ["funnel", "--bg", `--set-path=${path}`, String(port)]);
+  try {
+    await pexec(ts, ["funnel", "--bg", `--set-path=${path}`, String(port)]);
+  } catch (e: any) {
+    // Turn the raw "funnel not enabled" failure into actionable enable steps.
+    const raw = `${e?.stdout ?? ""}${e?.stderr ?? ""}`.trim() || String(e?.message ?? e);
+    throw new Error(funnelHelp(raw));
+  }
 
   return {
     url: `https://${dns}${path}`,

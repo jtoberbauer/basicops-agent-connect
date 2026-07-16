@@ -12,10 +12,14 @@ server.
 ## Deploy
 
 ```bash
-gh repo clone jtoberbauer/basicops-agent-connect
+git clone https://github.com/jtoberbauer/basicops-agent-connect.git
 cd basicops-agent-connect
 bash scripts/setup-vps.sh
 ```
+
+(A fresh server has `git` but usually not the GitHub CLI, so use `git clone`
+above. `gh repo clone jtoberbauer/basicops-agent-connect` also works if you have
+`gh` installed.)
 
 `setup-vps.sh` does the whole thing: installs Node + Tailscale + the Claude CLI,
 builds, connects Tailscale (approve in your browser), then launches the

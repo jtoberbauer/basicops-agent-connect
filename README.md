@@ -23,7 +23,7 @@ connects Tailscale, launches the installer, handles the Claude login, offers a
 persistent service). See [DEPLOY.md](DEPLOY.md):
 
 ```bash
-gh repo clone jtoberbauer/basicops-agent-connect
+git clone https://github.com/jtoberbauer/basicops-agent-connect.git
 cd basicops-agent-connect
 bash scripts/setup-vps.sh
 ```

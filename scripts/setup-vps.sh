@@ -36,6 +36,18 @@ fi
 say "Claude CLI $(claude --version 2>/dev/null || echo installed)"
 
 # 4. Build & link the package
+# Use a user-level npm global prefix so `npm link` works WITHOUT root. A stock
+# NodeSource install uses the /usr prefix (root-owned), where `npm link` fails
+# with EACCES for a normal user. Point the global prefix at ~/.npm-global and put
+# it on PATH (persisted for future shells + the systemd unit picks it up).
+NPM_PREFIX="$HOME/.npm-global"
+mkdir -p "$NPM_PREFIX"
+npm config set prefix "$NPM_PREFIX"
+export PATH="$NPM_PREFIX/bin:$PATH"
+if ! grep -q '.npm-global/bin' "$HOME/.profile" 2>/dev/null; then
+  echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> "$HOME/.profile"
+fi
+
 say "Installing deps + building…"
 npm install
 npm run build
