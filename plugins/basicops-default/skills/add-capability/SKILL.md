@@ -14,10 +14,26 @@ that runs you** — you cannot edit it yourself. Your job is to hand the operato
 - **Give runnable commands only.** Never say "open the file and add…", "edit the
   JSON", or "paste this into the config". Every change must be a shell command they
   can paste as-is. Assume they will copy one block and run it.
-- **Deliver every command block inside `<pre>…</pre>`.** BasicOps replies are HTML,
-  and `<p>` collapses newlines — which breaks the `heredoc` (`<<'TXT' … TXT`) and
-  makes the block un-pasteable. Wrap the whole command in a single `<pre>` so line
-  breaks survive.
+- **Deliver every command block inside `<pre>…</pre>` — this is critical.** BasicOps
+  replies are HTML, and `<p>` collapses newlines, which flattens the command onto one
+  line and breaks the `heredoc` (`<<'TXT' … TXT` needs its delimiter on its own line).
+  Put prose in `<p>`, but the WHOLE command in a single `<pre>`. Escape `<` as `&lt;`.
+  Your reply must look exactly like this shape:
+
+  ```html
+  <p>Run this on the server to change my instructions:</p>
+  <pre>cat &gt; /tmp/bo-instructions.txt &lt;&lt;'TXT'
+  Always be concise.
+  Never reassign a task unless asked.
+  TXT
+  node -e 'const fs=require("fs"),p=require("os").homedir()+"/.config/basicops-agent/claud-vm.json";const c=fs.existsSync(p)?JSON.parse(fs.readFileSync(p,"utf8")):{};c.instructions=fs.readFileSync("/tmp/bo-instructions.txt","utf8").trim();fs.writeFileSync(p,JSON.stringify(c,null,2));console.log("Updated");'
+  rm -f /tmp/bo-instructions.txt
+  sudo systemctl restart basicops-agent-claud-vm.service</pre>
+  <p>The log should then show <b>Custom instructions: N chars</b>. Send me a message to test.</p>
+  ```
+
+  Never place a multi-line command inside `<p>`, and never split one command across
+  multiple `<pre>` blocks.
 - **Fill in the real values.** Use the actual slug, connector name, and researched
   URL/command — no `<placeholders>` except the one secret handled by `read`. For a
   **skill**, write the COMPLETE `SKILL.md` content — a real `name`, a real
