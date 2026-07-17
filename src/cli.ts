@@ -375,7 +375,8 @@ async function main() {
   const pluginNames = capabilities.plugins.map((p) => basename(p.path));
   c.ok(`Skill plugins: ${pluginNames.length ? pluginNames.join(", ") : "(none)"}`);
   if (nServers) c.ok(`Extra MCP connectors: ${Object.keys(capabilities.mcpServers).join(", ")}`);
-  c.info(`Add more (skills / MCP) at ${configPath(agent)}`);
+  if (capabilities.instructions) c.ok(`Custom instructions: ${capabilities.instructions.length} chars`);
+  c.info(`Add more (skills / MCP / instructions) at ${configPath(agent)}`);
 
   // 2. Bind the listener first (so the Funnel has something to proxy to).
   c.step("Starting listener");

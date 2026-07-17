@@ -1,6 +1,6 @@
 ---
 name: add-capability
-description: Guide the person running this agent through adding a new skill or MCP connector to it. Use this WHENEVER someone asks about giving you new abilities or connecting you to another tool or service — including "add a skill", "connect you to Gmail / Google Drive / Slack / GitHub / <any app>", "integrate with X", "give you access to X", "can you use X", "hook you up to X", "add an MCP server/connector", or "how do I extend what you can do". Prefer this skill over answering from general knowledge — it has the real, correct setup steps for THIS deployment; answering from memory produces wrong package names and paths.
+description: Guide the person running this agent through adding a new skill or MCP connector, OR changing the agent's own instructions / behavior. Use this WHENEVER someone asks about giving you new abilities, connecting you to another tool or service, or changing how you behave — including "add a skill", "connect you to Gmail / Google Drive / Slack / GitHub / <any app>", "integrate with X", "give you access to X", "can you use X", "add an MCP server/connector", "how do I extend what you can do", AND "change your instructions", "update your instructions", "change your persona / tone / behavior", "always do X from now on", or "how do I tell you to behave differently". Prefer this skill over answering from general knowledge — it has the real, correct steps for THIS deployment; answering from memory produces wrong package names and paths.
 ---
 
 # Guiding an operator to add a skill or MCP connector
@@ -127,9 +127,41 @@ description, and body with content authored for THEIR actual request. Any tools 
 new skill relies on (e.g. `WebFetch`) must be ones the agent already has, or a
 connector added separately.
 
+### Change my instructions (persona / behavior)
+
+Your standing behavior is set by an `instructions` string in the same config file;
+it's appended to your system prompt. Use this when the user wants to change how you
+behave in general (tone, defaults, "always do X from now on") — NOT for one-off
+requests, which you just do.
+
+Write out the FULL instruction text they asked for (don't paraphrase into a
+placeholder), and give them this block. The heredoc handles multi-line text, and
+`node` merges it in without disturbing skills/connectors:
+
+````bash
+cat > /tmp/bo-instructions.txt <<'TXT'
+Always be concise and professional, and lead with the answer.
+When summarizing a task, start with its status and current owner.
+Never change a task's assignee unless explicitly asked.
+TXT
+node -e '
+const fs=require("fs"), p=require("os").homedir()+"/.config/basicops-agent/claude-agent.json";
+const c=fs.existsSync(p)?JSON.parse(fs.readFileSync(p,"utf8")):{};
+c.instructions=fs.readFileSync("/tmp/bo-instructions.txt","utf8").trim();
+fs.writeFileSync(p,JSON.stringify(c,null,2)); console.log("Updated instructions in "+p);'
+rm -f /tmp/bo-instructions.txt
+sudo systemctl restart basicops-agent-claude-agent.service
+sleep 3 && journalctl -u basicops-agent-claude-agent -n 20 --no-pager | grep -Ei "instructions|skill|live"
+````
+
+Replace the text inside the heredoc with exactly what they want you to do. To
+*append* to existing instructions rather than replace, tell them to include their
+current instructions plus the new lines (there's only one `instructions` field, so
+writing it replaces the previous value).
+
 ## Step 4 — what success looks like
 
-Tell them the final `journalctl` line should print `Extra MCP connectors: …` and/or
-`Skill plugins: …`, then to send you a new message to try it. If instead they don't
-run the persistent service, the restart command is: stop the running
-`basicops-connect` and start it again.
+Tell them the final `journalctl` line should print `Extra MCP connectors: …`,
+`Skill plugins: …`, and/or `Custom instructions: N chars`, then to send you a new
+message to try it. If instead they don't run the persistent service, the restart
+command is: stop the running `basicops-connect` and start it again.

@@ -98,6 +98,20 @@ export function startListener(cfg: ListenerConfig): Promise<number> {
     ...caps.allowedTools,
   ];
 
+  // Base system prompt (wires in the skill), plus any operator instructions from
+  // the per-agent config file — how an operator customizes the agent's behavior.
+  const baseSystemPrompt =
+    "You are a BasicOps agent connected via webhook. For every incoming event, follow " +
+    "your basicops-webhook skill exactly: read the payload (context + request), decide " +
+    "whether to respond, fetch only the context you need, and deliver your reply by " +
+    "calling the correct BasicOps posting tool (create_reply_in_message when context has " +
+    "a messageId). Never finish without posting via a tool when a reply is warranted. " +
+    "If the user asks how to extend, configure, or connect you to other tools/services, " +
+    "use the add-capability skill.";
+  const systemPrompt = caps.instructions
+    ? `${baseSystemPrompt}\n\n## Your operator's instructions\nFollow these unless they conflict with the rules above:\n${caps.instructions}`
+    : baseSystemPrompt;
+
   let loggedCapabilities = false;
 
   // Hand the raw webhook payload to the agent and let the basicops-webhook skill
@@ -118,14 +132,7 @@ export function startListener(cfg: ListenerConfig): Promise<number> {
         plugins: caps.plugins,
         allowedTools,
         disallowedTools: BLOCKED_TOOLS,
-        systemPrompt:
-          "You are a BasicOps agent connected via webhook. For every incoming event, follow " +
-          "your basicops-webhook skill exactly: read the payload (context + request), decide " +
-          "whether to respond, fetch only the context you need, and deliver your reply by " +
-          "calling the correct BasicOps posting tool (create_reply_in_message when context has " +
-          "a messageId). Never finish without posting via a tool when a reply is warranted. " +
-          "If the user asks how to extend, configure, or connect you to other tools/services, " +
-          "use the add-capability skill.",
+        systemPrompt,
         maxTurns: 14,
         stderr: (d: string) => {
           const line = d.trim();

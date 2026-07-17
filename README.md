@@ -106,8 +106,14 @@ before. See [config.example.json](config.example.json):
   directories. Each bundles skills under `skills/<name>/SKILL.md`; the `Skill`
   tool is enabled automatically when any plugin is loaded. A worked example
   lives in [plugins/basicops-extras/](plugins/basicops-extras/).
+- **`instructions`** — standing instructions appended to the agent's system
+  prompt (tone, defaults, "always do X"). How you customize the agent's behavior.
 - **`allowedTools`** — extra built-in tools to permit (advanced). The destructive
   BasicOps tools stay blocked regardless.
+
+The bundled `add-capability` skill can walk an operator through all of these from
+chat — just ask the agent "add a skill", "connect you to X", or "change your
+instructions" and it hands back the exact commands.
 
 On startup the agent logs what it loaded, and on the first message it logs the
 live skills + MCP server status (`[skills] …`, `[mcp] …`).

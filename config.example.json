@@ -13,5 +13,7 @@
     "/home/gus/basicops-agent-connect/plugins/basicops-extras"
   ],
 
+  "instructions": "Standing instructions appended to the agent's system prompt. e.g. 'Always be concise and lead with the answer. Never reassign a task unless explicitly asked.'",
+
   "allowedTools": []
 }

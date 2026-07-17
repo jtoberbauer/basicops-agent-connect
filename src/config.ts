@@ -32,6 +32,8 @@ export type AgentCapabilities = {
   plugins: { type: "local"; path: string }[];
   /** Tool allowlist additions beyond the auto-derived ones. */
   allowedTools: string[];
+  /** Operator-supplied instructions appended to the agent's system prompt. */
+  instructions?: string;
 };
 
 const EMPTY: AgentCapabilities = { mcpServers: {}, plugins: [], allowedTools: [] };
@@ -117,6 +119,8 @@ export function loadCapabilities(agent: string): AgentCapabilities {
   const plugins = [...defaultPlugins(), ...pluginPaths.map((p) => ({ type: "local" as const, path: p }))];
 
   const allowedTools: string[] = Array.isArray(parsed.allowedTools) ? parsed.allowedTools : [];
+  const instructions =
+    typeof parsed.instructions === "string" && parsed.instructions.trim() ? parsed.instructions.trim() : undefined;
 
-  return { mcpServers, plugins, allowedTools };
+  return { mcpServers, plugins, allowedTools, instructions };
 }
