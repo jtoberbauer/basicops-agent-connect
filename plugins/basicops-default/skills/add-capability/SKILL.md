@@ -75,13 +75,19 @@ replace the name, description, and body with THEIR request:
 
 ### Change my instructions (persona / behavior)
 
-For "always do X", tone, or defaults — NOT one-off requests, which you just do. Put the
-full instruction text into the `printf` with `\n` between lines:
+For "always do X", tone, or defaults — NOT one-off requests, which you just do. The
+`instructions` value is a plain string; write it as ONE line (separate points with
+". " — no line breaks needed). Put the full text inline in the command, replacing
+`INSTRUCTIONS_HERE`. **Critical:** the text must contain no `'` (apostrophe) or `"`
+(double-quote), or the command breaks — rephrase to avoid them ("do not", not "don't").
 
-`printf 'Always be concise and lead with the answer.\nNever change a task assignee unless explicitly asked.\n' > /tmp/boi && node -e 'const fs=require("fs"),p=require("os").homedir()+"/.config/basicops-agent/claude-agent.json",c=fs.existsSync(p)?JSON.parse(fs.readFileSync(p,"utf8")):{};c.instructions=fs.readFileSync("/tmp/boi","utf8").trim();fs.writeFileSync(p,JSON.stringify(c,null,2));console.log("Updated "+p)' && rm -f /tmp/boi && sudo systemctl restart basicops-agent-claude-agent.service`
+`node -e 'const fs=require("fs"),p=require("os").homedir()+"/.config/basicops-agent/claude-agent.json",c=fs.existsSync(p)?JSON.parse(fs.readFileSync(p,"utf8")):{};c.instructions="INSTRUCTIONS_HERE";fs.writeFileSync(p,JSON.stringify(c,null,2));console.log("Updated "+p)' && sudo systemctl restart basicops-agent-claude-agent.service`
 
-There is only one `instructions` field, so this replaces the previous value. To keep the
-old instructions and add to them, include both in the `printf`.
+Example filled in: `…c.instructions="Always be concise and lead with the answer. Never change a task assignee unless explicitly asked.";…`
+
+There is only one `instructions` field, so this replaces the previous value. To keep
+the old instructions and add to them, include both (the user can tell you their current
+ones, or read them from the config file first).
 
 ## Step 4 — what success looks like
 
