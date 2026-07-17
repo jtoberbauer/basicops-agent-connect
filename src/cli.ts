@@ -54,6 +54,16 @@ function fail(msg: string): never {
   process.exit(1);
 }
 
+/** Prominent end-of-install banner: agent is live, go check your DMs. */
+function announceConnected(displayName: string, dmTarget?: string, future = false) {
+  console.log(`\n\x1b[1m\x1b[32m🎉 ${displayName} is connected and live!\x1b[0m`);
+  if (dmTarget) {
+    console.log(`\n  \x1b[36m📬 Open BasicOps and go to your Direct Messages.\x1b[0m`);
+    console.log(`     ${displayName} ${future ? "will send" : "just sent"} you a message — look for a DM from "${displayName}".`);
+    console.log(`     Reply there, or @-mention ${displayName} in any task, chat, or channel.`);
+  }
+}
+
 function promptText(rl: readline.Interface, query: string): Promise<string> {
   return new Promise((resolve) => rl.question(query, (a) => resolve(a.trim())));
 }
@@ -352,6 +362,8 @@ async function main() {
   if (interactive && (await offerServiceInstall(apiKey, agent, dmTarget))) {
     c.ok("Agent installed as a service and started. It will keep running and survive reboots.");
     c.info(`Logs: journalctl -u basicops-agent-${agent} -f`);
+    // The service runs the connect sequence (incl. the DM) a moment from now.
+    announceConnected(displayName, dmTarget, /* future */ true);
     return;
   }
 
@@ -395,6 +407,7 @@ async function main() {
 
   // 5. DM the person who installed the agent, confirming it's live.
   c.step("Sending connect DM");
+  let dmSent = false;
   if (!dmTarget) {
     c.info("⚠ No DM recipient — skipping. Pass --dm <email|id> (or set BASICOPS_DM) to enable.");
   } else {
@@ -414,11 +427,13 @@ async function main() {
             `<p>Message me here, or @-mention me in any task, chat, or channel, and I'll help.</p>`,
         });
         c.ok(`DM sent to ${dmTarget} (user ${userId})`);
+        dmSent = true;
       }
     }
   }
 
-  // 6. Stay live.
+  // 6. Announce, then stay live.
+  announceConnected(displayName, dmSent ? dmTarget : undefined, /* future */ false);
   c.step("Agent is live — send it a message in BasicOps (Ctrl-C to stop)");
   const shutdown = async () => {
     console.log("\nShutting down…");
