@@ -1,15 +1,22 @@
 ---
 name: basicops-webhook
-description: How to handle an incoming BasicOps webhook event — read the payload (context and request), decide whether to respond, fetch only the context you need, and ALWAYS deliver your reply via the correct BasicOps posting tool. Use this on EVERY incoming BasicOps event you receive — a message, reply, task, direct chat, group chat, channel, or project event.
+description: Handle incoming BasicOps webhook payloads. Use when the input contains a context object with an event field such as basicops.chat.message.created, basicops.task.reply.created, or similar BasicOps events. Returns a raw HTML string as output — no tool calls for posting.
 ---
-
 # BasicOps Webhook Skill
 
 **These instructions are binding. You must follow them on every run, without exception.**
 
-This skill is invoked once per incoming BasicOps webhook event. It receives a payload, performs any necessary actions, and must deliver its final response to the user by calling the appropriate BasicOps posting tool (e.g., `create_reply_in_message`).
+This skill is invoked once per incoming BasicOps webhook event. It receives a payload, does any necessary work, and returns a single HTML string as its output. A separate component handles posting that string to BasicOps. Do not call `set_agent_status`. Do not call reply or message-posting tools unless the user explicitly asks you to post somewhere specific.
 
-**Critical:** Every response to a user message must be delivered via a BasicOps tool call. Never return your response as a plain text or HTML string alone, as it will not reach the user unless a posting tool is explicitly executed. Do not call `set_agent_status` unless explicitly required (e.g., when ignoring a message).
+When responding to a BasicOps webhook payload, your **entire output must be raw HTML — nothing else**.
+
+- **NEVER** write any text before the HTML (no preamble, no reasoning, no "I'll do X", no "The skill says Y").
+- **NEVER** narrate your intent, explain your interpretation of the request, or summarize the context you identified.
+- Internal reasoning belongs in your thinking only — it must never appear in your output.
+- The first character of your output must be the opening `<` of an HTML tag.
+- If the correct response is silence (e.g. a trivial acknowledgement), return an empty string — not an explanation of why you're staying silent.
+- **Before finalizing your output, check:** does it start with `<`? If not, you are violating this rule. Delete everything before the first `<` tag.
+- **There is no exception for "context-setting", "clarifying the situation", or "explaining limitations."** All of that goes inside the HTML itself (e.g. inside a `<p>` tag), never before it.
 
 ---
 
@@ -63,7 +70,7 @@ The user's message or request as HTML. Present when the event was triggered by a
 
 ## 3. User Preferences — Timezone, Date Format, and Agent Name
 
-Load user preferences only when needed. Call `get_current_user` to retrieve the user preferences.
+Load user preferences only when needed. Read `user-prefs.json` from your workspace. If the file does not exist or the `fetchedAt` timestamp is more than 6 hours old, call `get_current_user` and overwrite the file with the result, adding a `fetchedAt` field set to the current UTC time.
 
 ```json
 {
@@ -94,7 +101,7 @@ When writing a date to any BasicOps field (e.g. `dueDate`, `startDate`, `endDate
 **Do not use midnight UTC (`T00:00:00.000Z`) as a proxy for "start of day".** For any timezone west of UTC, midnight UTC resolves to the previous calendar day.
 
 Steps:
-1. Resolve the user's intended date in their local timezone (from the user preferences → `timeZone`).
+1. Resolve the user's intended date in their local timezone (from `user-prefs.json` → `timeZone`).
 2. Compute midnight (00:00:00) of that date in that timezone.
 3. Convert to UTC and send that value.
 
@@ -109,23 +116,37 @@ Example — user timezone `America/Los_Angeles` (PDT = UTC−7), user says "set 
 BasicOps performs server-side filtering and will only send you events that are addressed to you or that require your attention.
 
 ### Trivial social messages
-Ignore messages that are only acknowledgements (e.g. "thanks", "ok", "👍") unless they also contain a clear request. When ignoring, call `set_agent_status` with the `messageId` from `context.messageId`, `event` from `context.event` in the webhook payload, and `status` set to `done`.
-
-Before classifying a short message (e.g. "try now", "go ahead", "ok try it") as trivial and ignoring it, check the thread context:
-
-- If the message is a reply, fetch the parent message and any sibling replies using `get_message` with the `messageId` from context.
-- If a prior reply from you described a failure, access error, or blocker, treat a short follow-up as an instruction to retry the original request — not as an acknowledgement to ignore.
-- Only classify a message as trivial if the thread context contains no unresolved request that the follow-up could plausibly be addressing.
+Ignore messages that are only acknowledgements (e.g. "thanks", "ok", "👍") unless they also contain a clear request. When ignoring, return an empty string.
 
 ---
 
 ## 5. How to Respond
 
-**Posting is mandatory.** You must always call the appropriate BasicOps message tool to deliver your response. Returning text without calling a tool is never acceptable — the text will not reach the user. Every run must end with a tool call that posts your reply.
+This skill is a function. Your output IS the response. You do not need to know where it will be posted — a separate component handles that. You do not need a `messageId`, `taskId`, or any other ID to reply. Just produce the HTML and return it.
 
-Always reply by calling `create_reply_in_message` with the `messageId` from `context.messageId` in the webhook payload. This applies to *all surfaces* — task threads, project messages, direct chats, group chats, and channels — unless the event has no `messageId`, in which case use the appropriate surface-specific message creation tool (e.g. `create_message_in_chat` for a new chat message with no parent message).
+**Output the HTML directly — no preamble, no label, no explanation.** Do not write "Here is the HTML response:" or anything similar before the content. Your entire output should be raw HTML and nothing else.
 
-Do not use surface-specific message tools (e.g. `create_message_in_chat`, `create_message_in_task`) when a `messageId` is present in context. The reply tool is always preferred when responding to a user message.
+**Do not call `create_reply_in_message` or any `create_message_in_*` tool.** Calling these would post a duplicate message. Your only job is to return an HTML string.
+
+For the request "Are you there?" the correct output is simply:
+```html
+<p>Yes, I'm here.</p>
+```
+No tool calls needed. No IDs needed. Just return the string.
+
+**Exception:** If the user explicitly asks you to post content to a specific surface (e.g. "Post the project summary to the Marketing channel"), call the appropriate tool (`create_message_in_channel`, `create_message_in_chat`, `create_message_in_groupchat`, `create_message_in_task`, `create_message_in_project`) and return an empty string or a brief confirmation.
+
+---
+
+## 5a. Data Integrity — Never Output Before Fetching
+
+**CRITICAL: Your HTML output must be generated exclusively from data returned by tool calls in the current run. You must never fabricate, guess, or pre-fill any field value — including IDs, URLs, titles, dates, assignees, or statuses.**
+
+- **Complete all tool calls before producing any output.** Do not begin writing the HTML response until all required data has been fetched and is available in tool results.
+- **Never run tool calls in parallel with HTML output.** If you need to call a tool to answer the request, the tool result must be in hand before you write a single character of HTML.
+- **URLs are not guessable.** Every `href` in your output must come verbatim from a `url` field returned by a tool call in this run. Do not construct, infer, or approximate URLs from memory or prior context.
+- **If a tool call fails,** say so inside the HTML rather than substituting a guessed or remembered value.
+- **Self-check before finalizing:** For every URL, name, date, and status in your output, confirm it appears verbatim in a tool result from this run. If you cannot confirm it, remove it or replace it with a note that the data was unavailable.
 
 ---
 
@@ -151,6 +172,8 @@ The payload gives you the IDs of everything involved in the event. Whether you n
 
 Fetch the minimum you need to answer confidently. Do not load broad context speculatively.
 
+> ⚠️ **Never generate output speculatively while tool calls are in flight.** Wait for all fetch results before writing the HTML. Partial or pre-filled output built from memory is a correctness violation — URLs and field values recalled from memory will differ from actual data.
+
 ---
 
 ## 7. Allowed Operations by Surface
@@ -161,7 +184,7 @@ Fetch the minimum you need to answer confidently. Do not load broad context spec
 - Update task fields (status, priority, assignee, description) when the request clearly authorizes it.
 - Inspect related tasks, project context, or dependencies when needed.
 - Return your response as an HTML string.
-- **Never write your reply to the task description.** All responses must be delivered via `create_reply_in_message` (or the appropriate posting tool). Only update `description` when the user explicitly asks to change the task description itself.
+- **Never write your reply to the task description.** All responses must be delivered as the returned HTML string. Only update `description` when the user explicitly asks to change the task description itself.
 
 ### Non-task message surfaces (project, channel, group chat, direct chat)
 - Read the current message and any relevant thread context.
@@ -179,13 +202,12 @@ Fetch the minimum you need to answer confidently. Do not load broad context spec
 
 ## 8. Behavioral Defaults
 
-- **Ground replies in provided context.** Do not invent facts. If the context is incomplete, say so briefly.
+- **Ground replies exclusively in tool-call results from this run.** Do not use memory, prior context, or inference to fill in any field value. If a value was not returned by a tool call in the current run, do not include it — state that the data was unavailable instead.
 - **Be concise.** Short, practical replies. Avoid restating what the user already knows.
 - **Ask at most one clarifying question.** If the request is ambiguous, ask one focused question rather than listing possibilities or guessing.
 - **Use HTML for replies.** BasicOps message content is HTML. Use `<p>`, `<b>`, `<ul>/<li>`, and `<a href="URL">label</a>` for links.
-- **Newlines and code blocks don't survive.** BasicOps collapses every newline to a space and strips `<pre>`/code blocks. So NEVER hand the user a multi-line shell command or code snippet — it will be flattened onto one line and break (heredocs especially). Any command you give must work as a **single line** (chain with `&&`; use `printf` with literal `\n` for file content). This is exactly what the add-capability skill's commands already do.
-- **When formatting lists in HTML replies, always use `<ul>` for unordered lists and `<ol>` for ordered/numbered lists with `<li>` items.** Do not use plain text dashes or line breaks as substitutes for list markup.
 - **When referencing any BasicOps entity that has a URL** (tasks, projects, notes, messages), always render its name as a clickable link: `<a href="URL">Name</a>`.
+- **When formatting lists in HTML replies, always use `<ul>` for unordered lists and `<ol>` for ordered/numbered lists with `<li>` items. Do not use plain text dashes or line breaks as substitutes for list markup.
 - **Map casual wording to valid values** where reasonable (e.g. "mark done" → Complete, "set high priority" → High, "start this" → In Progress).
 - **When assigning a task,** use `list_users` and/or `get_user` to resolve the person. If there is one clear match, update the assignee. If there are multiple plausible matches or no clear match, ask one clarifying question instead of guessing. Do not assign the task to yourself unless explicitly asked.
 - **When creating subtasks,** aim for a sensible, modest set — usually 3–7. Do not create an excessive list.

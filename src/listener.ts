@@ -1,13 +1,16 @@
 /**
- * Webhook listener: receives BasicOps events and hands each raw payload to the
- * Claude Agent SDK, which runs the bundled `basicops-webhook` skill to decide how
- * to respond (which surface, which tool, or stay silent) and posts back via the
- * BasicOps MCP tools. Thin transport — the skill owns the behavior. Per-
- * conversation session memory + a loop guard for the agent's own messages.
+ * Webhook listener. Hands each raw BasicOps payload to the Claude Agent SDK
+ * (system prompt = the Agent doc; bundled basicops-webhook skill on top). The
+ * skill RETURNS an HTML string rather than posting, so this listener is the
+ * "separate component" that posts it — to the right surface, from context. If
+ * the agent instead posts a message itself, we detect that and don't double-post.
+ * Per-conversation session memory + a loop guard for the agent's own messages.
  */
 import http from "node:http";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentCapabilities } from "./config.js";
+import { AGENT_SYSTEM_PROMPT } from "./prompt.js";
+import { BasicOpsClient } from "./basicops.js";
 
 export type ListenerConfig = {
   mcpUrl: string;
@@ -98,33 +101,48 @@ export function startListener(cfg: ListenerConfig): Promise<number> {
     ...caps.allowedTools,
   ];
 
-  // Base system prompt (wires in the skill), plus any operator instructions from
-  // the per-agent config file — how an operator customizes the agent's behavior.
-  const baseSystemPrompt =
-    "You are a BasicOps agent connected via webhook. For every incoming event, follow " +
-    "your basicops-webhook skill exactly: read the payload (context + request), decide " +
-    "whether to respond, fetch only the context you need, and deliver your reply by " +
-    "calling the correct BasicOps posting tool (create_reply_in_message when context has " +
-    "a messageId). Never finish without posting via a tool when a reply is warranted. " +
-    "If the user asks how to extend, configure, or connect you to other tools/services, " +
-    "use the add-capability skill.";
+  // System prompt = the Agent doc, plus any operator instructions from the config.
   const systemPrompt = caps.instructions
-    ? `${baseSystemPrompt}\n\n## Your operator's instructions\nFollow these unless they conflict with the rules above:\n${caps.instructions}`
-    : baseSystemPrompt;
+    ? `${AGENT_SYSTEM_PROMPT}\n\n## Your operator's instructions\nFollow these unless they conflict with the rules above:\n${caps.instructions}`
+    : AGENT_SYSTEM_PROMPT;
+
+  // Stateless client the listener uses to POST the agent's returned HTML.
+  const client = new BasicOpsClient(cfg.mcpUrl, cfg.apiKey);
+
+  // Post `html` to the surface identified by the event context. Prefer replying
+  // to the triggering message; otherwise use the surface-specific tool.
+  async function postToSurface(ctx: Record<string, any>, html: string): Promise<string | undefined> {
+    const m = { message: html };
+    if (ctx.messageId) return client.call("create_reply_in_message", { messageId: ctx.messageId, ...m }).then(() => "reply");
+    if (ctx.chatId) return client.call("create_message_in_chat", { chatId: ctx.chatId, ...m }).then(() => "chat");
+    if (ctx.taskId) return client.call("create_message_in_task", { taskId: ctx.taskId, ...m }).then(() => "task");
+    if (ctx.channelId) return client.call("create_message_in_channel", { channelId: ctx.channelId, ...m }).then(() => "channel");
+    if (ctx.groupChatId) return client.call("create_message_in_groupchat", { groupchatId: ctx.groupChatId, ...m }).then(() => "groupchat");
+    if (ctx.projectId) return client.call("create_message_in_project", { projectId: ctx.projectId, ...m }).then(() => "project");
+    return undefined;
+  }
+
+  // Clear the agent's "working" status (the skill leaves this to us).
+  async function clearStatus(ctx: Record<string, any>): Promise<void> {
+    if (!ctx.messageId && !ctx.event) return;
+    await client
+      .call("set_agent_status", { event: ctx.event ?? "", id: ctx.messageId ?? ctx.replyId ?? "", status: "done" })
+      .catch(() => {});
+  }
 
   let loggedCapabilities = false;
 
-  // Hand the raw webhook payload to the agent and let the basicops-webhook skill
-  // decide everything (which surface, which tool, whether to stay silent). The
-  // listener is deliberately a thin transport — no hardcoded reply mechanics.
+  // Run the agent on the payload, then POST its returned HTML to the right
+  // surface — unless the agent already posted a message itself (then we stay out
+  // to avoid a duplicate). Empty output = intentional silence.
   async function handleEvent(ev: Incoming) {
     const resume = sessions.get(ev.convId);
     const payload = JSON.stringify({ context: ev.context, request: ev.request });
 
     const response = query({
       prompt:
-        "You received a BasicOps webhook event. Handle it by following your " +
-        "basicops-webhook skill exactly. Event payload:\n\n" +
+        "You received a BasicOps webhook event. Handle it and produce your reply. " +
+        "Event payload:\n\n" +
         payload,
       options: {
         resume,
@@ -141,6 +159,8 @@ export function startListener(cfg: ListenerConfig): Promise<number> {
       },
     });
 
+    let finalText = "";
+    let agentPosted = false; // the agent called a posting tool itself
     for await (const m of response) {
       if (m.type === "system" && (m as any).subtype === "init" && !loggedCapabilities) {
         loggedCapabilities = true;
@@ -151,13 +171,34 @@ export function startListener(cfg: ListenerConfig): Promise<number> {
         if (skills.length) console.log(`  [skills] ${skills.join(", ")}`);
       } else if (m.type === "assistant") {
         for (const b of m.message.content as any[]) {
-          if (b.type === "tool_use") console.log(`  [tool] ${b.name}`);
+          if (b.type === "tool_use") {
+            console.log(`  [tool] ${b.name}`);
+            if (/mcp__basicops__(create_reply_in_message|create_message_in_)/.test(b.name)) agentPosted = true;
+          } else if (b.type === "text" && b.text.trim()) {
+            finalText = b.text; // keep the last non-empty text block as the reply
+          }
         }
       } else if (m.type === "result") {
         sessions.set(ev.convId, m.session_id);
+        if ((m as any).subtype === "success" && typeof (m as any).result === "string") finalText = (m as any).result;
         console.log(`  done (${m.num_turns} turns)`);
       }
     }
+
+    // Extract the HTML the skill returned (its output starts at the first tag).
+    const html = finalText.slice(finalText.indexOf("<")).trim();
+    if (agentPosted) {
+      console.log("  agent posted directly; not re-posting");
+    } else if (html.startsWith("<")) {
+      const where = await postToSurface(ev.context, html).catch((e) => {
+        console.error("  post error:", e.message);
+        return undefined;
+      });
+      console.log(where ? `  posted reply → ${where}` : "  no surface to post to");
+    } else {
+      console.log("  agent stayed silent");
+    }
+    await clearStatus(ev.context);
   }
 
   const server = http.createServer((req, res) => {
