@@ -1,7 +1,9 @@
 /**
- * Webhook listener: receives BasicOps `connect_agent` events, generates a reply
- * with the Claude Agent SDK (which can read/write BasicOps via its MCP tools),
- * and posts it back — with per-chat memory and a loop guard.
+ * Webhook listener: receives BasicOps events and hands each raw payload to the
+ * Claude Agent SDK, which runs the bundled `basicops-webhook` skill to decide how
+ * to respond (which surface, which tool, or stay silent) and posts back via the
+ * BasicOps MCP tools. Thin transport — the skill owns the behavior. Per-
+ * conversation session memory + a loop guard for the agent's own messages.
  */
 import http from "node:http";
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -27,10 +29,10 @@ const BLOCKED_TOOLS = [
 
 type Incoming = {
   event: string;
-  chatId?: number;
+  context: Record<string, any>; // full context: all surface/entity IDs
+  request: string; // raw HTML of the user's message (as the skill expects)
   userId?: number;
-  messageId?: string;
-  text: string;
+  convId: string; // for per-conversation session memory
   fromAgent: boolean;
 };
 
@@ -46,26 +48,30 @@ const htmlToText = (s: unknown): string =>
     .replace(/\s+/g, " ")
     .trim();
 
-// connect_agent enriched shape: { event, context: { userId, chatId, messageId }, request }
-// (also tolerates the create_webhook batch shape: { events: [{ event, data }] })
+// Webhook shape: { event, context: { userId, taskId/chatId/…, messageId, replyId }, request }
+// (also tolerates the batch shape: { events: [{ event, data: { context, request } }] }).
+// We hand the whole { context, request } to the agent and let the skill drive.
 function parseEvents(body: any, agentUserId: string): Incoming[] {
   const list = Array.isArray(body?.events) ? body.events : [body];
   return list.map((e: any): Incoming => {
-    const ctx = e?.context ?? e?.data ?? {};
-    const message = e?.request ?? e?.data?.message ?? e?.message ?? "";
+    const context = e?.context ?? e?.data?.context ?? e?.data ?? {};
+    const request = e?.request ?? e?.data?.request ?? e?.data?.message ?? e?.message ?? "";
+    const convId = String(
+      context.taskId ?? context.chatId ?? context.groupChatId ?? context.channelId ?? context.projectId ?? "default",
+    );
     return {
-      event: String(e?.event ?? ctx?.event ?? ""),
-      chatId: ctx.chatId,
-      userId: ctx.userId,
-      messageId: ctx.messageId ?? ctx.id,
-      text: htmlToText(message),
-      fromAgent: String(ctx.userId) === agentUserId,
+      event: String(e?.event ?? context?.event ?? ""),
+      context,
+      request: typeof request === "string" ? request : JSON.stringify(request),
+      userId: context.userId,
+      convId,
+      fromAgent: String(context.userId) === agentUserId,
     };
   });
 }
 
 export function startListener(cfg: ListenerConfig): Promise<number> {
-  const sessions = new Map<number, string>(); // chatId -> Agent SDK session id
+  const sessions = new Map<string, string>(); // convId -> Agent SDK session id
 
   const caps = cfg.capabilities ?? { mcpServers: {}, plugins: [], allowedTools: [] };
 
@@ -94,16 +100,18 @@ export function startListener(cfg: ListenerConfig): Promise<number> {
 
   let loggedCapabilities = false;
 
-  async function handleMessage(chatId: number, text: string, messageId?: string) {
-    const resume = sessions.get(chatId);
-    const statusLine = messageId
-      ? `The triggering message id is "${messageId}".\n\nDo this in order:\n` +
-        `1. Reply helpfully and concisely by calling create_message_in_chat with chatId ${chatId}.\n` +
-        `2. Then call set_agent_status with event "${messageId}", id "${messageId}", status "done".`
-      : `Reply helpfully and concisely by calling create_message_in_chat with chatId ${chatId}.`;
+  // Hand the raw webhook payload to the agent and let the basicops-webhook skill
+  // decide everything (which surface, which tool, whether to stay silent). The
+  // listener is deliberately a thin transport — no hardcoded reply mechanics.
+  async function handleEvent(ev: Incoming) {
+    const resume = sessions.get(ev.convId);
+    const payload = JSON.stringify({ context: ev.context, request: ev.request });
 
     const response = query({
-      prompt: `A user sent this message in BasicOps chat ${chatId}:\n\n"${text}"\n\n${statusLine}`,
+      prompt:
+        "You received a BasicOps webhook event. Handle it by following your " +
+        "basicops-webhook skill exactly. Event payload:\n\n" +
+        payload,
       options: {
         resume,
         mcpServers,
@@ -111,14 +119,14 @@ export function startListener(cfg: ListenerConfig): Promise<number> {
         allowedTools,
         disallowedTools: BLOCKED_TOOLS,
         systemPrompt:
-          "You are a helpful assistant replying to messages in BasicOps. Be concise " +
-          "and friendly. When a Skill is available that matches the user's request, " +
-          "invoke it and follow it instead of answering from general knowledge — this " +
-          "is essential for questions about extending, configuring, or connecting you " +
-          "to other tools/services, where guessing produces wrong steps. Always post " +
-          "your reply with create_message_in_chat using the chatId you were given, then " +
-          "clear your status with set_agent_status status='done'.",
-        maxTurns: 10,
+          "You are a BasicOps agent connected via webhook. For every incoming event, follow " +
+          "your basicops-webhook skill exactly: read the payload (context + request), decide " +
+          "whether to respond, fetch only the context you need, and deliver your reply by " +
+          "calling the correct BasicOps posting tool (create_reply_in_message when context has " +
+          "a messageId). Never finish without posting via a tool when a reply is warranted. " +
+          "If the user asks how to extend, configure, or connect you to other tools/services, " +
+          "use the add-capability skill.",
+        maxTurns: 14,
         stderr: (d: string) => {
           const line = d.trim();
           if (line) console.error(`  [claude stderr] ${line}`);
@@ -139,7 +147,7 @@ export function startListener(cfg: ListenerConfig): Promise<number> {
           if (b.type === "tool_use") console.log(`  [tool] ${b.name}`);
         }
       } else if (m.type === "result") {
-        sessions.set(chatId, m.session_id);
+        sessions.set(ev.convId, m.session_id);
         console.log(`  done (${m.num_turns} turns)`);
       }
     }
@@ -164,12 +172,11 @@ export function startListener(cfg: ListenerConfig): Promise<number> {
       }
 
       for (const ev of parseEvents(body, cfg.agentUserId)) {
-        if (ev.event && !ev.event.includes("message.created")) continue;
-        if (ev.fromAgent) continue; // loop guard
-        if (!ev.chatId || !ev.text) continue;
-        console.log(`[chat ${ev.chatId}] ${ev.text}`);
+        if (ev.fromAgent) continue; // loop guard: skip the agent's own messages
+        if (!ev.request) continue; // nothing to respond to (lifecycle/empty events)
+        console.log(`[${ev.event || "event"}] conv ${ev.convId}: ${htmlToText(ev.request).slice(0, 100)}`);
         try {
-          await handleMessage(Number(ev.chatId), ev.text, ev.messageId);
+          await handleEvent(ev);
         } catch (err) {
           console.error("  handler error:", err);
         }
