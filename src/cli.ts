@@ -224,7 +224,7 @@ async function tailscalePreflight(): Promise<boolean> {
  * service was installed and started — in which case the caller should NOT also
  * run the agent in the foreground.
  */
-async function offerServiceInstall(apiKey: string, agent: string): Promise<boolean> {
+async function offerServiceInstall(apiKey: string, agent: string, dmTarget?: string): Promise<boolean> {
   if (process.platform !== "linux") return false; // systemd only
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -239,7 +239,7 @@ async function offerServiceInstall(apiKey: string, agent: string): Promise<boole
   await new Promise<void>((resolve, reject) => {
     const child = spawn("bash", [script], {
       stdio: "inherit",
-      env: { ...process.env, BASICOPS_API_KEY: apiKey, BASICOPS_AGENT: agent },
+      env: { ...process.env, BASICOPS_API_KEY: apiKey, BASICOPS_AGENT: agent, BASICOPS_DM: dmTarget ?? "" },
     });
     child.on("error", reject);
     child.on("exit", (code) =>
@@ -247,6 +247,23 @@ async function offerServiceInstall(apiKey: string, agent: string): Promise<boole
     );
   }).catch((e) => fail(`Service install failed: ${e.message}`));
   return true;
+}
+
+/** Resolve a BasicOps user by email (searching pages) or a numeric id. */
+async function resolveUserId(client: BasicOpsClient, target: string): Promise<number | undefined> {
+  const t = target.trim();
+  if (/^\d+$/.test(t)) return Number(t);
+  const email = t.toLowerCase();
+  let nextPage: string | undefined;
+  for (let i = 0; i < 20; i++) {
+    const res = await client.call<any>("list_users", nextPage ? { nextPage } : {});
+    const list = Array.isArray(res?.data) ? res.data : Array.isArray(res) ? res : [];
+    const match = list.find((u: any) => String(u.email ?? "").toLowerCase() === email);
+    if (match?.id) return Number(match.id);
+    nextPage = res?.nextPage;
+    if (!nextPage) break;
+  }
+  return undefined;
 }
 
 function printHelp() {
@@ -262,7 +279,8 @@ Options:
   --port <n>         Local listener port (default: auto-pick a free port)
   --funnel-path <p>  Path on the shared :443 Funnel (default: /<detected-agent>).
                      Each concurrent agent gets its own path.
-  --project <id>     Project to create the confirmation task in (optional)
+  --dm <email|id>    BasicOps user to DM when the agent connects (or set
+                     BASICOPS_DM). Interactive install asks for this.
   --webhook-url <u>  Public webhook URL; skips Tailscale Funnel if provided
   --help             Show this help
 `);
@@ -287,8 +305,10 @@ async function main() {
   const port = Number(args.port ?? process.env.PORT ?? 0); // 0 = auto-pick a free port
   // The key alone identifies the agent; the ?agent= URL param is ignored.
   const mcpUrl = (args["mcp-url"] as string) ?? "https://app.basicops.com/mcp";
-  const projectId = args.project ? Number(args.project) : undefined;
   const explicitWebhook = args["webhook-url"] as string | undefined;
+  // Who to DM when the agent connects (the person running the install). Email or
+  // numeric user id; persisted into the service env so restarts reuse it.
+  let dmTarget = (args.dm as string) ?? process.env.BASICOPS_DM;
 
   const client = new BasicOpsClient(mcpUrl, apiKey);
 
@@ -309,6 +329,11 @@ async function main() {
   const displayName = config["Display name"] ?? agent;
   c.ok(`Detected agent "${displayName}" (agentId ${agent}, id ${agentUserId}, enabled)`);
 
+  // Ask who the agent should DM when it connects (the person installing it).
+  if (interactive && !dmTarget) {
+    dmTarget = await ask(`  Your BasicOps email (so ${displayName} can DM you when it's live): `);
+  }
+
   // Funnel path defaults to the detected agent id (override with --funnel-path).
   const rawPath = (args["funnel-path"] as string) ?? `/${agent}`;
   const funnelPath = "/" + rawPath.replace(/^\/+/, "").replace(/\/+$/, "");
@@ -324,7 +349,7 @@ async function main() {
   }
 
   // Offer the persistent service (interactive only), now that we know the agent.
-  if (interactive && (await offerServiceInstall(apiKey, agent))) {
+  if (interactive && (await offerServiceInstall(apiKey, agent, dmTarget))) {
     c.ok("Agent installed as a service and started. It will keep running and survive reboots.");
     c.info(`Logs: journalctl -u basicops-agent-${agent} -f`);
     return;
@@ -368,45 +393,29 @@ async function main() {
   });
   c.ok(`Webhook registered${reg?.webhookId ? ` (${reg.webhookId})` : ""} → ${webhookUrl}`);
 
-  // 5. Create the confirmation task. create_task requires a projectId, so when
-  //    --project isn't given we use the first project in the workspace.
-  c.step("Creating confirmation task");
-  let taskProject = projectId;
-  let skipReason: string | undefined;
-  if (!taskProject) {
-    let projects: any;
-    try {
-      projects = await client.call<any>("list_projects");
-    } catch (e: any) {
-      skipReason = `couldn't list projects (${e.message})`;
-    }
-    if (!skipReason) {
-      // The MCP endpoint returns tool errors as a text result (e.g. "not
-      // authenticated") rather than throwing — treat any non-list response as a
-      // real failure, so it never silently masquerades as "no projects".
-      if (typeof projects === "string") {
-        skipReason = `couldn't list projects (${projects})`;
+  // 5. DM the person who installed the agent, confirming it's live.
+  c.step("Sending connect DM");
+  if (!dmTarget) {
+    c.info("⚠ No DM recipient — skipping. Pass --dm <email|id> (or set BASICOPS_DM) to enable.");
+  } else {
+    const userId = await resolveUserId(client, dmTarget).catch(() => undefined);
+    if (!userId) {
+      c.info(`⚠ No BasicOps user found for "${dmTarget}" — skipping connect DM (check the email is a workspace member).`);
+    } else {
+      const chat = await client.call<any>("create_chat", { userId }).catch((e: any) => ({ __err: e.message }));
+      const chatId = chat?.id ?? chat?.chatId;
+      if (!chatId) {
+        c.info(`⚠ Couldn't open a direct chat with user ${userId} — skipping DM${chat?.__err ? ` (${chat.__err})` : ""}.`);
       } else {
-        const list = Array.isArray(projects?.data) ? projects.data : Array.isArray(projects) ? projects : [];
-        taskProject = list[0]?.id;
-        if (taskProject) c.info(`Using project "${list[0]?.title ?? list[0]?.name ?? taskProject}" (id ${taskProject})`);
-        else skipReason = "no projects in this workspace";
+        await client.call("create_message_in_chat", {
+          chatId,
+          message:
+            `<p>👋 <strong>${displayName}</strong> is connected and live.</p>` +
+            `<p>Message me here, or @-mention me in any task, chat, or channel, and I'll help.</p>`,
+        });
+        c.ok(`DM sent to ${dmTarget} (user ${userId})`);
       }
     }
-  }
-
-  if (!taskProject) {
-    c.info(`⚠ Skipping confirmation task — ${skipReason ?? "no project"}. Pass --project <id> to pick one.`);
-  } else {
-    const task = await client.call<{ id?: number; url?: string }>("create_task", {
-      title: `✅ Agent "${displayName}" connected`,
-      description:
-        `<p>Connected via <strong>basicops-agent-connect</strong> at ${new Date().toISOString()}.</p>` +
-        `<p>Webhook: ${webhookUrl}</p>`,
-      projectId: taskProject,
-    });
-    if (task?.id) c.ok(`Task created${task.url ? `: ${task.url}` : ` (id ${task.id})`}`);
-    else c.info(`⚠ Task not created: ${typeof task === "string" ? task : JSON.stringify(task)}`);
   }
 
   // 6. Stay live.

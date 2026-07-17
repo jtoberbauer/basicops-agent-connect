@@ -33,6 +33,7 @@ mkdir -p "$ENVDIR"; chmod 700 "$ENVDIR"
 ( umask 077; cat > "$ENVFILE" <<EOF
 BASICOPS_API_KEY=$BASICOPS_API_KEY
 BASICOPS_AGENT=$AGENT
+BASICOPS_DM=${BASICOPS_DM:-}
 EOF
 )
 echo "✓ wrote credentials to $ENVFILE (mode 600)"
